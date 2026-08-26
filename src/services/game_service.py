@@ -72,6 +72,7 @@ class GameService:
             await self.users.consume_paid_game(user)
             is_paid = True
         else:
+            await self.events.log("paywall_shown", user.id, None)
             raise PaymentRequiredError(
                 price=self.settings.price_second_game_rub,
                 pay_url=f"https://tribute.example/pay?telegram_id={telegram_id}",
