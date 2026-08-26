@@ -110,6 +110,10 @@ class WebhookAck(BaseModel):
     ok: bool = True
 
 
+class SkipAck(BaseModel):
+    ok: bool = True
+
+
 class AdminGrantRequest(BaseModel):
     telegram_id: int
     count: int = 1

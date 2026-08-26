@@ -165,6 +165,11 @@ class GameService:
         messages = await self.messages.list_for_game(game_id)
         return [m.content for m in messages if m.role == "player"][-2:]
 
+    async def skip_response(self, game: Game) -> None:
+        if game.status != "active":
+            raise GameNotActiveError("game is not active")
+        await self.events.log("response_skipped", game.user_id, game.id)
+
     async def respond(self, game: Game, text: str) -> tuple[str, str | None]:
         if game.status != "active":
             raise GameNotActiveError("game is not active")

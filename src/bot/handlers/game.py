@@ -52,11 +52,20 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
 
 
 @router.callback_query(F.data == "skip_response")
-async def on_skip_response(callback: CallbackQuery, state: FSMContext) -> None:
+async def on_skip_response(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
     await callback.answer()
     msg = callback_message(callback)
     if msg is None:
         return
+
+    data = await state.get_data()
+    game_id = data.get("game_id")
+    if game_id is not None:
+        try:
+            await api.skip(game_id)
+        except ApiError:
+            pass  # not worth blocking the player over an analytics event failing to log
+
     await msg.answer(texts.SKIPPED_RESPONSE_ACK, reply_markup=keyboards.roll_kb())
 
 

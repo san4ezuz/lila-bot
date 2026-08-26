@@ -160,6 +160,35 @@ async def test_rolling_a_finished_game_returns_409(client, unique_telegram_id):
     assert resp.json()["error"] == "game_not_active"
 
 
+async def test_skip_response_acks_and_logs_event(client, db_session, unique_telegram_id):
+    from src.db.models import Event
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+
+    resp = await client.post(f"/game/{game_id}/skip")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    from sqlalchemy import select
+
+    result = await db_session.execute(select(Event).where(Event.name == "response_skipped"))
+    assert result.scalar_one_or_none() is not None
+
+
+async def test_skip_response_on_finished_game_returns_409(client, unique_telegram_id):
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+    await client.post(f"/game/{game_id}/finish")
+
+    resp = await client.post(f"/game/{game_id}/skip")
+    assert resp.status_code == 409
+
+
 async def test_safety_flag_is_surfaced_on_crisis_marker(client, unique_telegram_id):
     start = await client.post(
         "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}

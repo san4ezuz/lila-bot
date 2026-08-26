@@ -16,6 +16,7 @@ from src.api.schemas import (
     RollResponse,
     SetIntentionRequest,
     SetIntentionResponse,
+    SkipAck,
     StartGameRequest,
     StartGameResponse,
     UserStatusResponse,
@@ -105,6 +106,14 @@ async def roll(
     if cache_key:
         _roll_idempotency_cache[cache_key] = response
     return response
+
+
+@router.post("/game/{game_id}/skip", response_model=SkipAck)
+async def skip_response(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> SkipAck:
+    service = GameService(db)
+    game = await service.get_game(game_id)
+    await service.skip_response(game)
+    return SkipAck()
 
 
 @router.post("/game/{game_id}/respond", response_model=RespondResponse)

@@ -92,6 +92,9 @@ class GameApiClient:
         response = await self._request("POST", f"/game/{game_id}/roll", headers=headers)
         return RollResponse.model_validate(response.json())
 
+    async def skip(self, game_id: str) -> None:
+        await self._request("POST", f"/game/{game_id}/skip")
+
     async def respond(self, game_id: str, text: str) -> RespondResponse:
         response = await self._request("POST", f"/game/{game_id}/respond", json={"text": text})
         return RespondResponse.model_validate(response.json())
