@@ -50,8 +50,10 @@ class GameRepository:
         return await self._session.get(Game, game_id)
 
     async def get_active_for_user(self, user_id: int) -> Game | None:
+        """A game the user can still resume: intention not set yet ('setup') or in progress
+        ('active'). Excludes 'finished'/'abandoned' — those don't block starting a new game."""
         result = await self._session.execute(
-            select(Game).where(Game.user_id == user_id, Game.status == "active")
+            select(Game).where(Game.user_id == user_id, Game.status.in_(("setup", "active")))
         )
         return result.scalar_one_or_none()
 

@@ -29,7 +29,10 @@ python scripts/play_cli.py  # симуляция 1000 партий, провер
 - [x] Этап 3 — БД: `src/db/models.py` (SQLAlchemy 2.0, 6 таблиц), `src/db/repositories.py`,
       Alembic-миграция применена к локальному Postgres (`docker compose up -d db`),
       `tests/test_db_repositories.py` — **6/6 passed**
-- [ ] Этап 4 — Game API
+- [x] Этап 4 — Game API: `src/api/` (FastAPI, роутер `game.py`), `src/services/game_service.py`
+      (оркестрация правил+БД), `src/llm/guide.py` — пока **заглушки текста** без реального LLM
+      (Этап 5 заменит тела функций, сигнатуры и `game_service.py` не изменятся); проверено и
+      тестами (`tests/test_api_game.py`, 10/10), и вживую через `curl` на поднятом `uvicorn`
 - [ ] Этап 5 — LLM-оркестрация
 - [ ] Этап 6 — Telegram-бот
 - [ ] Этап 7 — тестовые партии и тюнинг тона
