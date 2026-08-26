@@ -87,15 +87,17 @@ class GameRepository:
         game.summary = summary
         await self._session.flush()
 
-    async def abandon_stale(self, cutoff: datetime) -> int:
+    async def find_stale_active(self, cutoff: datetime) -> list[Game]:
+        """Games with no activity since `cutoff` — filtered by `updated_at`, not `created_at`,
+        so a game with recent moves isn't wrongly flagged just because it started days ago."""
         result = await self._session.execute(
-            select(Game).where(Game.status == "active", Game.created_at < cutoff)
+            select(Game).where(Game.status == "active", Game.updated_at < cutoff)
         )
-        games = result.scalars().all()
-        for game in games:
-            game.status = "abandoned"
+        return list(result.scalars().all())
+
+    async def mark_abandoned(self, game: Game) -> None:
+        game.status = "abandoned"
         await self._session.flush()
-        return len(games)
 
 
 class MoveRepository:

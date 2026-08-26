@@ -120,3 +120,29 @@ async def test_event_logging(db_session, unique_telegram_id):
     event = await events.log("game_started", user_id=unique_telegram_id, props={"is_paid": False})
     assert event.name == "game_started"
     assert event.props == {"is_paid": False}
+
+
+async def test_find_stale_active_filters_by_last_activity_not_creation(db_session, unique_telegram_id):
+    from datetime import UTC, datetime, timedelta
+
+    users = UserRepository(db_session)
+    games = GameRepository(db_session)
+    board = get_default_board()
+
+    user = await users.get_or_create(unique_telegram_id)
+    game = await games.create(user_id=user.id, board_version=board.version, is_paid=False)
+    await games.set_intention(game, "тест")  # status -> active
+
+    now = datetime.now(UTC)
+    old_cutoff = now - timedelta(hours=1)
+    future_cutoff = now + timedelta(hours=1)
+
+    # Freshly active game must not be flagged stale against a cutoff in the past.
+    assert game not in await games.find_stale_active(old_cutoff)
+    # ...but is flagged once the cutoff is set after its last activity.
+    stale = await games.find_stale_active(future_cutoff)
+    assert game in stale
+
+    await games.mark_abandoned(game)
+    assert game.status == "abandoned"
+    assert game not in await games.find_stale_active(future_cutoff)  # no longer 'active'

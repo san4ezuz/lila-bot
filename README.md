@@ -64,8 +64,10 @@ python scripts/play_cli.py  # симуляция 1000 партий, провер
 - [x] Этап 9 — метрики: `scripts/metrics.sql` (4 метрики MVP из §9 плана + бонусная воронка
       пейволла), проверен вживую через `docker exec ... psql -f scripts/metrics.sql` на локальной
       БД. Добавил недостающее логирование события `paywall_shown` (было пропущено в Этапе 4/8).
-      Не логируются `game_abandoned`/`feedback_given` — см. пометку в начале SQL-файла
-      (`response_skipped` добавлен отдельным коммитом: `POST /game/{id}/skip`)
+      Не логируется `feedback_given` — см. пометку в начале SQL-файла. `response_skipped` и
+      `game_abandoned` добавлены отдельными коммитами после Этапа 9: `POST /game/{id}/skip`
+      и `scripts/abandon_stale_games.py` (крон, 48ч бездействия по `games.updated_at`,
+      не по времени создания партии — это была реальная ошибка в первой версии метода)
 - [x] Этап 10 (артефакты) — `Dockerfile` + `.dockerignore` (единый образ для `api` и `bot`,
       разные команды запуска). **Собран и прогнан локально по-настоящему**: `docker build`,
       контейнер поднят с реальным `alembic upgrade head` и `uvicorn`, `/health` ответил `ok`.

@@ -1,6 +1,6 @@
 import random
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -226,6 +226,18 @@ class GameService:
         if game is None:
             raise GameNotFoundError(str(game_id))
         return game
+
+    async def abandon_stale_games(self, hours: int = 48) -> int:
+        """Marks games with no activity for `hours` as abandoned and logs `game_abandoned` per
+        game (docs/PLAN.md §12) — meant to run on a schedule, see scripts/abandon_stale_games.py.
+        Not wired into request handling: an abandoned game frees up `get_active_for_user()` for
+        that user (they can just /start again), it isn't itself blocking anything."""
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+        stale = await self.games.find_stale_active(cutoff)
+        for game in stale:
+            await self.games.mark_abandoned(game)
+            await self.events.log("game_abandoned", game.user_id, game.id, {"turn": game.turn})
+        return len(stale)
 
     async def get_user_status(self, telegram_id: int) -> dict:
         user = await self.users.get_by_telegram_id(telegram_id)

@@ -60,6 +60,11 @@ class Game(Base):
     board_version: Mapped[str | None] = mapped_column(String(50))
     finish_reason: Mapped[str | None] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Bumped on every UPDATE (roll, intention set, summary set, ...) — used to detect abandoned
+    # games by last *activity*, not by creation time (see GameRepository.abandon_stale).
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     summary: Mapped[str | None] = mapped_column(Text)
 
