@@ -73,9 +73,13 @@ class GameService:
             is_paid = True
         else:
             await self.events.log("paywall_shown", user.id, None)
+            # Tribute exposes no API to mint a per-user checkout link with custom metadata
+            # (see src/services/billing_service.py docstring) — the pay link is a static one
+            # configured once in Creator Dashboard; correlation back to this user happens via
+            # the telegramId Tribute's webhook already carries (payment happens inside Telegram).
             raise PaymentRequiredError(
                 price=self.settings.price_second_game_rub,
-                pay_url=f"https://tribute.example/pay?telegram_id={telegram_id}",
+                pay_url=self.settings.tribute_pay_url,
             )
 
         game = await self.games.create(user.id, self.board.version, is_paid)

@@ -12,6 +12,7 @@ from src.db.repositories import UserRepository
 from src.services.billing_service import (
     BillingService,
     DuplicateWebhookError,
+    parse_webhook_payload,
     verify_signature,
 )
 
@@ -37,6 +38,56 @@ def test_verify_signature_rejects_wrong_hmac():
 
 def test_verify_signature_rejects_missing_header():
     assert verify_signature(b'{"a": 1}', None, "s3cr3t") is False
+
+
+# --- parse_webhook_payload (docs/PLAN.md's "verify against real Tribute docs" placeholder,
+# now grounded in wiki.tribute.tg's confirmed event names / telegramId field convention — see
+# src/services/billing_service.py module docstring) --------------------------------------------
+
+
+def test_parse_webhook_payload_extracts_success_event():
+    parsed = parse_webhook_payload(
+        {
+            "event": "shopOrderPaymentReceived",
+            "id": "order-123",
+            "amount": 299,
+            "currency": "RUB",
+            "user": {"telegramId": 555, "firstName": "A"},
+        }
+    )
+    assert parsed is not None
+    assert parsed.telegram_id == 555
+    assert parsed.external_id == "order-123"
+    assert parsed.amount == 299.0
+    assert parsed.currency == "RUB"
+
+
+def test_parse_webhook_payload_ignores_known_non_success_event():
+    parsed = parse_webhook_payload(
+        {"event": "shopOrderRefunded", "id": "order-123", "user": {"telegramId": 555}}
+    )
+    assert parsed is None
+
+
+def test_parse_webhook_payload_ignores_unrecognized_event():
+    parsed = parse_webhook_payload({"event": "somethingWeirdWeDontKnow", "id": "x"})
+    assert parsed is None
+
+
+def test_parse_webhook_payload_ignores_missing_event_field():
+    parsed = parse_webhook_payload({"id": "x", "amount": 100})
+    assert parsed is None
+
+
+def test_parse_webhook_payload_falls_back_to_flat_telegram_id():
+    parsed = parse_webhook_payload(
+        {"event": "newDonation", "id": "d-1", "amount": 100, "telegram_id": 777}
+    )
+    assert parsed is not None
+    assert parsed.telegram_id == 777
+
+
+# --- service-level tests (no HTTP) ---------------------------------------------------------
 
 
 async def test_process_tribute_payment_grants_paid_game(db_session, unique_telegram_id):
@@ -107,17 +158,18 @@ def _sign(body: dict, secret: str) -> tuple[bytes, str]:
 async def test_webhook_with_valid_signature_grants_paid_game(http_client, unique_telegram_id):
     settings = get_settings()
     body = {
-        "external_id": "ext-abc",
+        "event": "shopOrderPaymentReceived",
+        "id": "ext-abc",
         "amount": 299,
         "currency": "RUB",
-        "metadata": {"telegram_id": unique_telegram_id},
+        "user": {"telegramId": unique_telegram_id},
     }
-    raw, sig = _sign(body, settings.tribute_webhook_secret)
+    raw, sig = _sign(body, settings.tribute_api_key)
 
     resp = await http_client.post(
         "/payments/tribute/webhook",
         content=raw,
-        headers={"Content-Type": "application/json", "X-Tribute-Signature": sig},
+        headers={"Content-Type": "application/json", "trbt-signature": sig},
     )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
@@ -127,25 +179,51 @@ async def test_webhook_with_valid_signature_grants_paid_game(http_client, unique
 
 
 async def test_webhook_with_invalid_signature_is_rejected(http_client, unique_telegram_id):
-    body = {"external_id": "ext-bad", "amount": 299, "metadata": {"telegram_id": unique_telegram_id}}
+    body = {
+        "event": "shopOrderPaymentReceived",
+        "id": "ext-bad",
+        "amount": 299,
+        "user": {"telegramId": unique_telegram_id},
+    }
     resp = await http_client.post(
         "/payments/tribute/webhook",
         content=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", "X-Tribute-Signature": "wrong"},
+        headers={"Content-Type": "application/json", "trbt-signature": "wrong"},
     )
     assert resp.status_code == 401
+
+
+async def test_webhook_with_non_success_event_does_not_grant(http_client, unique_telegram_id):
+    settings = get_settings()
+    body = {
+        "event": "shopOrderRefunded",
+        "id": "ext-refund",
+        "user": {"telegramId": unique_telegram_id},
+    }
+    raw, sig = _sign(body, settings.tribute_api_key)
+
+    resp = await http_client.post(
+        "/payments/tribute/webhook",
+        content=raw,
+        headers={"Content-Type": "application/json", "trbt-signature": sig},
+    )
+    assert resp.status_code == 200  # acked, but...
+
+    status = await http_client.get(f"/users/{unique_telegram_id}/status")
+    assert status.json()["paid_games_available"] == 0  # ...nothing was granted
 
 
 async def test_webhook_redelivery_is_idempotent(http_client, unique_telegram_id):
     settings = get_settings()
     body = {
-        "external_id": "ext-redelivered",
+        "event": "shopOrderPaymentReceived",
+        "id": "ext-redelivered",
         "amount": 299,
         "currency": "RUB",
-        "metadata": {"telegram_id": unique_telegram_id},
+        "user": {"telegramId": unique_telegram_id},
     }
-    raw, sig = _sign(body, settings.tribute_webhook_secret)
-    headers = {"Content-Type": "application/json", "X-Tribute-Signature": sig}
+    raw, sig = _sign(body, settings.tribute_api_key)
+    headers = {"Content-Type": "application/json", "trbt-signature": sig}
 
     r1 = await http_client.post("/payments/tribute/webhook", content=raw, headers=headers)
     r2 = await http_client.post("/payments/tribute/webhook", content=raw, headers=headers)

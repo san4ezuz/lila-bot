@@ -12,7 +12,11 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://lila:lila@localhost:5432/lila"
     api_base_url: str = "http://localhost:8000"
     api_internal_token: str = "change-me"
-    tribute_webhook_secret: str = "change-me"
+    # Same value as the "Api-Key" Tribute gives you in Creator Dashboard -> Settings -> API Keys —
+    # it both authenticates outbound API calls AND signs inbound webhooks. See
+    # src/services/billing_service.py's module docstring for how this was confirmed.
+    tribute_api_key: str = "change-me"
+    tribute_pay_url: str = ""  # static checkout link from Creator Dashboard; no API to mint one
     price_second_game_rub: int = 299
     llm_model: str = "claude-opus-5"
     log_level: str = "INFO"

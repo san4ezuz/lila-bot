@@ -1,17 +1,35 @@
 """Tribute payment webhook handling + the manual /grant admin fallback (docs/PLAN.md §11).
 
-IMPORTANT — verify against real Tribute docs before going live: the signature header name,
-HMAC algorithm, and webhook payload shape below (`X-Tribute-Signature`, HMAC-SHA256 over the
-raw body, `metadata.telegram_id`) are a placeholder built on the most common webhook-signing
-convention, not confirmed against Tribute's actual API — see docs/PLAN.md §11.2's own note that
-this needs the provider's current documentation at implementation time. Everything else (the
-idempotency-by-external_id logic, the paid-game grant, the admin fallback) is provider-agnostic
-and does not need to change when the real payload shape is plugged in.
+Confirmed against Tribute's own docs (wiki.tribute.tg, fetched 2026-08-26 — see
+docs/PLAN.md §11.2 for the standing note that provider details should be re-checked at
+implementation time):
+  - Signature header is `trbt-signature` (not a made-up `X-Tribute-Signature`).
+  - It's an HMAC-SHA256 of the raw request body, signed with your **Api-Key** — Tribute does
+    NOT use a separate webhook secret. `settings.tribute_api_key` is the same key used for the
+    `Api-Key` header on outbound requests to Tribute's API.
+  - Real event names exist for two product families: shop orders (`shopOrder`,
+    `shopOrderChargeSuccess`, `shopOrderPaymentReceived`, `shopOrderChargeFailed`,
+    `shopOrderCancelled`, `shopOrderRefunded`, `shopOrderPaymentFailed`) and content-creator
+    products (`newSubscription`, `renewedSubscription`, `newDonation`, `recurrentDonation`,
+    `newDigitalProduct`).
+  - Tribute's data model nests a `telegramId` field on a `User` object (confirmed from Tribute's
+    own Go SDK struct definitions, github.com/izeberg/go-tribute-payments-hook) — since Tribute
+    payments happen inside Telegram, this is how a webhook correlates to our own users, not a
+    custom metadata field we attach ourselves (no such field is exposed in their public product-
+    creation docs, which is not an API — products/prices are configured in Creator Dashboard).
+
+Still NOT confirmed (GitBook's OpenAPI payload examples aren't reachable as static content) and
+worth checking against a real test payment before launch: the exact byte encoding of the digest
+(hex assumed below — the most common convention), and the precise top-level JSON shape per event
+(whether `user`/`amount`/`currency`/`id` sit at the payload root or nested under a per-event key
+like `payload.subscription`/`payload.donation`). `parse_webhook_payload()` below tries several
+plausible shapes and logs + safely no-ops (ack without granting) rather than guessing wrong.
 """
 
 import hashlib
 import hmac
 import logging
+from dataclasses import dataclass
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +39,29 @@ from src.db.models import Payment, User
 from src.db.repositories import EventRepository, PaymentRepository, UserRepository
 
 logger = logging.getLogger(__name__)
+
+# Event names confirmed from wiki.tribute.tg (for-shops/api/webhooks and
+# for-content-creators/api-documentation/webhooks) — see module docstring.
+_SUCCESS_EVENTS = frozenset(
+    {
+        "shopOrderPaymentReceived",
+        "shopOrderChargeSuccess",
+        "newDigitalProduct",
+        "newSubscription",
+        "renewedSubscription",
+        "newDonation",
+        "recurrentDonation",
+    }
+)
+_IGNORABLE_EVENTS = frozenset(
+    {
+        "shopOrder",
+        "shopOrderChargeFailed",
+        "shopOrderCancelled",
+        "shopOrderRefunded",
+        "shopOrderPaymentFailed",
+    }
+)
 
 
 class InvalidWebhookSignatureError(Exception):
@@ -41,6 +82,57 @@ def verify_signature(raw_body: bytes, signature: str | None, secret: str) -> boo
         return False
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedTributePayment:
+    telegram_id: int
+    external_id: str
+    amount: float
+    currency: str
+
+
+def parse_webhook_payload(payload: dict) -> ParsedTributePayment | None:
+    """Returns None for events we should acknowledge but not act on: a recognized non-success
+    event (refund/cancel/failure), or a shape we don't recognize at all — never guess and grant
+    on an event we can't positively identify as a successful payment."""
+    event = payload.get("event") or payload.get("name") or payload.get("type")
+
+    if event in _IGNORABLE_EVENTS:
+        logger.info("tribute webhook event %r — no action needed", event)
+        return None
+    if event is not None and event not in _SUCCESS_EVENTS:
+        logger.warning("unrecognized tribute webhook event %r — ignoring, not granting", event)
+        return None
+    if event is None:
+        logger.warning("tribute webhook payload has no recognizable event field: %r", payload)
+        return None
+
+    # Some event families nest the object under "payload"; try both root and nested.
+    body = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+    user = body.get("user") or payload.get("user") or {}
+
+    telegram_id = (
+        user.get("telegramId")
+        or body.get("telegramId")
+        or payload.get("telegram_id")
+        or (payload.get("metadata") or {}).get("telegram_id")
+    )
+    if telegram_id is None:
+        logger.warning("tribute webhook (%s) has no telegram id we recognize: %r", event, payload)
+        return None
+
+    external_id = body.get("id") or payload.get("id") or body.get("subscriptionId")
+    if external_id is None:
+        logger.warning("tribute webhook (%s) has no id field we recognize: %r", event, payload)
+        return None
+
+    amount = float(body.get("amount") or payload.get("amount") or 0)
+    currency = str(body.get("currency") or payload.get("currency") or "RUB")
+
+    return ParsedTributePayment(
+        telegram_id=int(telegram_id), external_id=str(external_id), amount=amount, currency=currency
+    )
 
 
 class BillingService:

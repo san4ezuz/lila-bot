@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db, require_internal_token
@@ -8,6 +8,7 @@ from src.services.billing_service import (
     BillingService,
     DuplicateWebhookError,
     InvalidWebhookSignatureError,
+    parse_webhook_payload,
     verify_signature,
 )
 
@@ -19,26 +20,30 @@ admin_router = APIRouter(dependencies=[Depends(require_internal_token)])
 async def tribute_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    x_tribute_signature: str | None = Header(default=None),
+    trbt_signature: str | None = Header(default=None, alias="trbt-signature"),
 ):
+    """See src.services.billing_service module docstring for what's confirmed vs. inferred
+    about Tribute's actual webhook contract."""
     settings = get_settings()
     raw_body = await request.body()
 
-    if not verify_signature(raw_body, x_tribute_signature, settings.tribute_webhook_secret):
+    if not verify_signature(raw_body, trbt_signature, settings.tribute_api_key):
         raise InvalidWebhookSignatureError
 
     payload = await request.json()
-    telegram_id = payload.get("telegram_id") or payload.get("metadata", {}).get("telegram_id")
-    if telegram_id is None:
-        raise HTTPException(status_code=400, detail="payload missing telegram_id")
+    parsed = parse_webhook_payload(payload)
+    if parsed is None:
+        # Not a success event, or a shape we don't recognize — ack anyway so Tribute doesn't
+        # retry-storm us; parse_webhook_payload() already logged why.
+        return WebhookAck()
 
     service = BillingService(db)
     try:
         await service.process_tribute_payment(
-            telegram_id=int(telegram_id),
-            external_id=str(payload.get("external_id") or payload.get("id")),
-            amount=float(payload.get("amount", 0)),
-            currency=str(payload.get("currency", "RUB")),
+            telegram_id=parsed.telegram_id,
+            external_id=parsed.external_id,
+            amount=parsed.amount,
+            currency=parsed.currency,
             raw_payload=payload,
         )
     except DuplicateWebhookError:
