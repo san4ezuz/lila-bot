@@ -60,5 +60,33 @@ python scripts/play_cli.py  # симуляция 1000 партий, провер
       БД. Добавил недостающее логирование события `paywall_shown` (было пропущено в Этапе 4/8).
       Не логируются `response_skipped`/`game_abandoned`/`feedback_given` — см. пометку в начале
       SQL-файла
-- [ ] Этап 10 — деплой
+- [x] Этап 10 (артефакты) — `Dockerfile` + `.dockerignore` (единый образ для `api` и `bot`,
+      разные команды запуска). **Собран и прогнан локально по-настоящему**: `docker build`,
+      контейнер поднят с реальным `alembic upgrade head` и `uvicorn`, `/health` ответил `ok`.
+      Сам деплой на Railway **не выполнялся** — нужен доступ к вашему аккаунту Railway,
+      см. раздел «Деплой» ниже
 
+## Деплой (Railway)
+
+Три компонента (docs/PLAN.md §13): управляемый Postgres + два сервиса из одного образа
+(`Dockerfile`), с разными командами запуска.
+
+1. `railway login`, затем `railway init` в корне репозитория (или через railway.app UI:
+   New Project → Deploy from GitHub repo).
+2. Добавить плагин **PostgreSQL** — Railway сам создаст `DATABASE_URL` в своих переменных;
+   его нужно будет переложить в `DATABASE_URL` сервиса `api`/`bot` в формате
+   `postgresql+asyncpg://...` (Railway по умолчанию даёт `postgresql://` — заменить схему).
+3. Сервис **api**: source = этот репозиторий (Dockerfile обнаружится автоматически).
+   - Start command: `alembic upgrade head && uvicorn src.api.main:app --host 0.0.0.0 --port $PORT`
+   - Переменные: `DATABASE_URL`, `API_INTERNAL_TOKEN`, `ANTHROPIC_API_KEY`, `TRIBUTE_WEBHOOK_SECRET`,
+     `PRICE_SECOND_GAME_RUB`, `LLM_MODEL=claude-opus-5`, `BOT_TOKEN` (нужен и здесь — используется
+     для уведомлений после оплаты, см. `src/services/billing_service.py`)
+   - Healthcheck: `/health`
+4. Сервис **bot**: тот же репозиторий/образ.
+   - Start command: `python -m src.bot.main`
+   - Переменные: `BOT_TOKEN`, `API_BASE_URL` (внутренний URL сервиса `api` в сети Railway),
+     `API_INTERNAL_TOKEN` (тот же секрет, что у `api`), `ADMIN_TELEGRAM_IDS`
+5. Бэкап Postgres — включить в настройках плагина (или `pg_dump` по крону) до пуска в люди.
+
+Актуальные шаги/имена полей в UI Railway могут отличаться от изложенного — сверить с
+их текущей документацией на момент деплоя.
