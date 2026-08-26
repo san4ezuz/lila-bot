@@ -1,0 +1,28 @@
+{
+  "version": "1.0-verified",
+  "source": "docs/leela_cells_final.json — cross-checked across 3 independent sources (board photo, hara.ru translation of Johari's commentary, dic.academic.ru mirror of the Wikipedia summary table). 19 connections total: 9 arrows + 10 snakes, matching the marker count on the board photo.",
+  "notes": "Unlike a typical snakes-and-ladders board, the physical board has 72 squares while the WIN condition is an exact landing on square 68 (see docs/RULES.md §4). Squares 69-72 are real, reachable squares past the goal ('overshoot zone'), not decorative — see docs/RULES.md §5a.",
+  "arrows": {
+    "10": 23,
+    "17": 69,
+    "20": 32,
+    "27": 41,
+    "28": 50,
+    "37": 66,
+    "45": 67,
+    "46": 62,
+    "54": 68
+  },
+  "snakes": {
+    "12": 8,
+    "16": 4,
+    "24": 7,
+    "29": 6,
+    "44": 9,
+    "52": 35,
+    "55": 3,
+    "61": 13,
+    "63": 2,
+    "72": 51
+  }
+}
