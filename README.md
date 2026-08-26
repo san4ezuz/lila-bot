@@ -9,7 +9,8 @@
 pip install -e ".[dev]"
 cp .env.example .env        # заполнить BOT_TOKEN / ANTHROPIC_API_KEY при необходимости
 docker compose up -d db     # локальный Postgres
-pytest                      # тесты движка и валидатор данных поля
+alembic upgrade head        # применить схему БД
+pytest                      # движок, валидатор данных поля, репозитории (нужен поднятый db)
 python scripts/play_cli.py  # симуляция 1000 партий, проверка баланса правил
 ```
 
@@ -25,7 +26,9 @@ python scripts/play_cli.py  # симуляция 1000 партий, провер
 - [x] Этап 2 — игровой движок `src/core/` + тесты `tests/test_rules.py`, `tests/test_board_data.py`
       (**28/28 passed**), симуляция `scripts/play_cli.py` — лимит ходов подобран по симуляции
       1000 партий: **60** (76% партий доходят до финиша; 40 из исходного описания давало только 58%)
-- [ ] Этап 3 — БД и репозитории
+- [x] Этап 3 — БД: `src/db/models.py` (SQLAlchemy 2.0, 6 таблиц), `src/db/repositories.py`,
+      Alembic-миграция применена к локальному Postgres (`docker compose up -d db`),
+      `tests/test_db_repositories.py` — **6/6 passed**
 - [ ] Этап 4 — Game API
 - [ ] Этап 5 — LLM-оркестрация
 - [ ] Этап 6 — Telegram-бот
