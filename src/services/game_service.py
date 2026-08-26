@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.core.board import Board, get_default_board
 from src.core.models import GameState, MoveResult
-from src.core.rules import apply_roll, create_initial_state
+from src.core.rules import apply_roll
 from src.db.models import Game, User
 from src.db.repositories import (
     EventRepository,
@@ -109,7 +109,7 @@ class GameService:
         await self.games.apply_state(game, new_state)
         move = await self.moves.create(game.id, result)
 
-        guide_message = self._roll_guide_message(result)
+        guide_message = await self._roll_guide_message(game, result)
         await self.messages.create(game.id, "guide", guide_message, move_id=move.id)
         await self.events.log(
             "move_made",
@@ -124,7 +124,7 @@ class GameService:
         can_roll = game.status == "active"
         return result, guide_message, can_roll
 
-    def _roll_guide_message(self, result: MoveResult) -> str:
+    async def _roll_guide_message(self, game: Game, result: MoveResult) -> str:
         if result.event == "not_entered":
             return guide.not_entered_message(result.roll)
         if result.event == "turn_limit_reached":
@@ -133,13 +133,32 @@ class GameService:
             return guide.not_entered_message(result.roll)
 
         cell = self.board.get_cell(result.final_position)
-        if result.event == "entered":
-            return guide.entered_message(cell)
         if result.event == "blocked_overshoot":
             return guide.blocked_overshoot_message(cell)
-        if result.event == "finished":
-            return guide.finished_message(cell)
-        return guide.moved_message(cell, result.transition)
+
+        # entered / moved / finished all land on a new cell — worth an LLM interpretation.
+        visited = await self._visited_names(game.id)
+        recent_answers = await self._recent_player_answers(game.id)
+        return await guide.interpret_cell(
+            intention=game.intention,
+            cell=cell,
+            event=result.event,
+            transition=result.transition,
+            visited=visited,
+            recent_player_answers=recent_answers,
+        )
+
+    async def _visited_names(self, game_id: uuid.UUID) -> list[str]:
+        moves = await self.moves.list_for_game(game_id)
+        return [
+            f"{m.to_pos} {self.board.get_cell(m.to_pos).name}"
+            for m in moves
+            if m.to_pos is not None
+        ]
+
+    async def _recent_player_answers(self, game_id: uuid.UUID) -> list[str]:
+        messages = await self.messages.list_for_game(game_id)
+        return [m.content for m in messages if m.role == "player"][-2:]
 
     async def respond(self, game: Game, text: str) -> tuple[str, str | None]:
         if game.status != "active":
@@ -147,7 +166,15 @@ class GameService:
 
         await self.messages.create(game.id, "player", text)
         safety_flag = safety.screen(text)
-        guide_message = guide.response_message(text, safety_flag)
+        if safety_flag:
+            guide_message = guide.safety_referral_message()
+        elif game.position is not None:
+            cell = self.board.get_cell(game.position)
+            guide_message = await guide.deepen(game.intention, cell, text)
+        else:
+            # Player replied before their first roll landed them on a cell — nothing to deepen
+            # yet; a static nudge back to the mechanic is enough (see docs/PLAN.md §8.1).
+            guide_message = "Слышу тебя. Бросай кубик, чтобы войти в игру, и продолжим оттуда."
         await self.messages.create(game.id, "guide", guide_message)
 
         await self.events.log(
@@ -162,8 +189,8 @@ class GameService:
         if game.status not in ("active", "finished"):
             raise GameNotActiveError("game cannot be finished from its current status")
 
-        moves = await self.moves.list_for_game(game.id)
-        summary = guide.summary_message(moves, self.board.cells)
+        visited = await self._visited_names(game.id)
+        summary = await guide.summarize_game(game.intention, visited)
         await self.games.set_summary(game, summary)
 
         if game.status != "finished":

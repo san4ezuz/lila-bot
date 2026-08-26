@@ -1,14 +1,66 @@
-"""Guide message generation — STUB implementation for Stage 4 (Game API).
+"""Guide message generation.
 
-Every function here returns deterministic, non-LLM text so the game mechanics (Stage 4) can be
-verified end-to-end before the LLM is wired up (Stage 5, see docs/PLAN.md §8). Stage 5 replaces
-the *bodies* of these functions with real `anthropic` calls (interpret_cell / deepen / summarize
-from the plan) while keeping the same signatures, so `src/services/game_service.py` — and every
-test written against it — does not need to change.
+Procedural moments (entry attempt failed, overshoot bounced, turn limit hit) stay static text —
+there's nothing to interpret, only a mechanic to report, and burning an LLM call there would
+just add latency and cost for no product value (docs/PLAN.md §8.1). The three calls that
+actually need the LLM — interpret_cell / deepen / summarize — are implemented here against the
+Anthropic Messages API; see docs/PLAN.md §8 for the design and docs/PROMPTS.md for the prompt
+version history. On any API failure, each falls back to a short static message rather than
+losing the player's move (docs/PLAN.md §8.5).
 """
 
+import asyncio
+import logging
+
+import anthropic
+
+from src.config import get_settings
 from src.core.board import Cell
-from src.db.models import Move
+from src.llm.client import extract_text, get_client
+from src.llm.prompts import (
+    GUIDE_SYSTEM_PROMPT,
+    build_deepen_context,
+    build_interpret_cell_context,
+    build_summary_context,
+)
+
+logger = logging.getLogger(__name__)
+
+_CALL_TIMEOUT_SECONDS = 40
+
+
+def _system_block() -> list[dict]:
+    return [{"type": "text", "text": GUIDE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+
+
+async def _call(
+    context: str,
+    max_tokens: int,
+    effort: str,
+    fallback: str,
+) -> str:
+    client = get_client()
+    settings = get_settings()
+    try:
+        message = await asyncio.wait_for(
+            client.messages.create(
+                model=settings.llm_model,
+                max_tokens=max_tokens,
+                system=_system_block(),
+                messages=[{"role": "user", "content": context}],
+                output_config={"effort": effort},
+            ),
+            timeout=_CALL_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, anthropic.APIError) as exc:
+        logger.warning("guide LLM call failed, using fallback: %s", exc)
+        return fallback
+
+    text = extract_text(message)
+    return text or fallback
+
+
+# --- static, procedural (no LLM call) -----------------------------------------------------
 
 
 def intro_message() -> str:
@@ -31,33 +83,10 @@ def not_entered_message(roll: int) -> str:
     return f"Выпало {roll}. Чтобы войти в игру, нужна ровно шестёрка — попробуй ещё раз."
 
 
-def entered_message(cell: Cell) -> str:
-    return (
-        f"Шестёрка — ты вошёл в игру. Фишка на клетке {cell.id}, «{cell.name}». "
-        f"{cell.theme} {cell.facets[0]} {cell.questions[0]}"
-    )
-
-
 def blocked_overshoot_message(cell: Cell) -> str:
     return (
         f"Этот бросок унёс бы фишку дальше края доски — ход сгорает, ты остаёшься на клетке "
         f"{cell.id}, «{cell.name}». Бросай ещё раз."
-    )
-
-
-def moved_message(cell: Cell, transition: str | None) -> str:
-    lead = {
-        "arrow": f"Стрела поднимает тебя к клетке {cell.id}, «{cell.name}».",
-        "snake": f"Змея уводит тебя вниз, к клетке {cell.id}, «{cell.name}».",
-        None: f"Фишка на клетке {cell.id}, «{cell.name}».",
-    }[transition]
-    return f"{lead} {cell.theme} {cell.facets[0]} {cell.questions[0]}"
-
-
-def finished_message(cell: Cell) -> str:
-    return (
-        f"Ты дошёл до клетки {cell.id}, «{cell.name}» — путь пройден. {cell.theme} "
-        f"{cell.questions[-1]}"
     )
 
 
@@ -68,22 +97,58 @@ def turn_limit_message() -> str:
     )
 
 
-def response_message(player_text: str, safety_flag: str | None) -> str:
-    if safety_flag == "soft_referral":
-        return (
-            "Спасибо, что рассказал об этом. То, о чём ты пишешь, звучит как что-то серьёзное, "
-            "с чем стоит поговорить с живым специалистом, а не только с игрой. Если тебе тяжело "
-            "прямо сейчас, пожалуйста, обратись за поддержкой — я рядом, если хочешь продолжить "
-            "или на сегодня остановиться здесь."
-        )
-    return "Слышу тебя. Идём дальше — бросай кубик, когда будешь готов."
-
-
-def summary_message(moves: list[Move], cells: dict[int, Cell]) -> str:
-    visited = [cells[m.to_pos].name for m in moves if m.to_pos is not None and m.to_pos in cells]
-    path = " → ".join(visited) if visited else "путь ещё не начался"
+def safety_referral_message() -> str:
+    """Fixed, vetted supportive text used INSTEAD of the LLM when the layer-1 lexical prescreen
+    (src/llm/safety.py) fires. A crisis disclosure is not the place to trust an unproven model
+    response even with the boundaries instruction in the system prompt — see docs/PROMPTS.md."""
     return (
+        "Спасибо, что рассказал об этом. То, о чём ты пишешь, звучит как что-то серьёзное, "
+        "с чем стоит поговорить с живым специалистом, а не только с игрой. Если тебе тяжело "
+        "прямо сейчас, пожалуйста, обратись за поддержкой — я рядом, если хочешь продолжить "
+        "или на сегодня остановиться здесь."
+    )
+
+
+# --- LLM calls -------------------------------------------------------------------------------
+
+
+async def interpret_cell(
+    intention: str | None,
+    cell: Cell,
+    event: str,
+    transition: str | None,
+    visited: list[str],
+    recent_player_answers: list[str],
+) -> str:
+    context = build_interpret_cell_context(
+        intention=intention,
+        cell_id=cell.id,
+        cell_name=cell.name,
+        theme=cell.theme,
+        facets=list(cell.facets),
+        questions=list(cell.questions),
+        event=event,
+        transition=transition,
+        visited=visited[-15:],
+        recent_player_answers=recent_player_answers[-2:],
+    )
+    fallback = (
+        f"Фишка на клетке {cell.id}, «{cell.name}». {cell.theme} {cell.questions[0]}"
+    )
+    return await _call(context, max_tokens=400, effort="medium", fallback=fallback)
+
+
+async def deepen(intention: str | None, cell: Cell, player_text: str) -> str:
+    context = build_deepen_context(intention, cell.name, player_text)
+    fallback = "Слышу тебя. Идём дальше — бросай кубик, когда будешь готов."
+    return await _call(context, max_tokens=350, effort="medium", fallback=fallback)
+
+
+async def summarize_game(intention: str | None, visited: list[str]) -> str:
+    context = build_summary_context(intention, visited)
+    path = " → ".join(visited) if visited else "путь ещё не начался"
+    fallback = (
         f"Вот путь, который ты прошёл за эту партию: {path}. "
-        "Каждая клетка на этом пути — не случайность, а отражение того, с чем ты работал. "
         "Что из пройденного отзывается в тебе сильнее всего прямо сейчас?"
     )
+    return await _call(context, max_tokens=900, effort="high", fallback=fallback)

@@ -8,6 +8,18 @@ from src.config import get_settings
 from src.db.models import Base
 
 
+@pytest.fixture(autouse=True)
+def stub_llm_calls(monkeypatch):
+    """Game/API tests exercise src.llm.guide through GameService, but should stay fast and
+    network-free by default — only tests/test_llm_guide.py cares about the real _call() plumbing
+    and unsets this via monkeypatch.undo() / a local override where needed."""
+
+    async def _fake_call(context: str, max_tokens: int, effort: str, fallback: str) -> str:
+        return f"[stub effort={effort}] {fallback}"
+
+    monkeypatch.setattr("src.llm.guide._call", _fake_call)
+
+
 @pytest_asyncio.fixture
 async def db_session() -> AsyncSession:
     """Runs each test inside its own transaction against the local dev Postgres,

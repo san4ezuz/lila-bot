@@ -33,6 +33,9 @@ testpaths = ["tests"]
 line-length = 100
 target-version = "py312"
 
+[tool.ruff.lint.per-file-ignores]
+"src/api/routers/*.py" = ["B008"]  # FastAPI's Depends()-in-default is the framework's own idiom
+
 [tool.mypy]
 python_version = "3.12"
 disallow_untyped_defs = true
