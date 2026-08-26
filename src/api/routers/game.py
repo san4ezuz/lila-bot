@@ -35,7 +35,9 @@ _roll_idempotency_cache: dict[str, RollResponse] = {}
     response_model=StartGameResponse,
     responses={402: {"model": PaymentRequiredResponse}},
 )
-async def start_game(body: StartGameRequest, db: AsyncSession = Depends(get_db)):
+async def start_game(
+    body: StartGameRequest, db: AsyncSession = Depends(get_db)
+) -> StartGameResponse | JSONResponse:
     service = GameService(db)
     try:
         game, guide_message = await service.start_game(
@@ -58,7 +60,9 @@ async def start_game(body: StartGameRequest, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/game/{game_id}/intention", response_model=SetIntentionResponse)
-async def set_intention(game_id: uuid.UUID, body: SetIntentionRequest, db: AsyncSession = Depends(get_db)):
+async def set_intention(
+    game_id: uuid.UUID, body: SetIntentionRequest, db: AsyncSession = Depends(get_db)
+) -> SetIntentionResponse:
     service = GameService(db)
     game = await service.get_game(game_id)
     guide_message = await service.set_intention(game, body.intention)
@@ -70,7 +74,7 @@ async def roll(
     game_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-):
+) -> RollResponse:
     cache_key = f"{game_id}:{idempotency_key}" if idempotency_key else None
     if cache_key and cache_key in _roll_idempotency_cache:
         return _roll_idempotency_cache[cache_key]
@@ -104,7 +108,9 @@ async def roll(
 
 
 @router.post("/game/{game_id}/respond", response_model=RespondResponse)
-async def respond(game_id: uuid.UUID, body: RespondRequest, db: AsyncSession = Depends(get_db)):
+async def respond(
+    game_id: uuid.UUID, body: RespondRequest, db: AsyncSession = Depends(get_db)
+) -> RespondResponse:
     service = GameService(db)
     game = await service.get_game(game_id)
     guide_message, safety_flag = await service.respond(game, body.text)
@@ -115,7 +121,7 @@ async def respond(game_id: uuid.UUID, body: RespondRequest, db: AsyncSession = D
 
 
 @router.get("/game/{game_id}", response_model=GameStateResponse)
-async def get_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def get_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> GameStateResponse:
     service = GameService(db)
     game = await service.get_game(game_id)
     moves = await service.moves.list_for_game(game.id)
@@ -147,7 +153,7 @@ async def get_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/game/{game_id}/finish", response_model=FinishGameResponse)
-async def finish_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+async def finish_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> FinishGameResponse:
     service = GameService(db)
     game = await service.get_game(game_id)
     summary, stats = await service.finish_game(game)
@@ -155,7 +161,7 @@ async def finish_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/users/{telegram_id}/status", response_model=UserStatusResponse)
-async def user_status(telegram_id: int, db: AsyncSession = Depends(get_db)):
+async def user_status(telegram_id: int, db: AsyncSession = Depends(get_db)) -> UserStatusResponse:
     service = GameService(db)
     status = await service.get_user_status(telegram_id)
     return UserStatusResponse(**status)

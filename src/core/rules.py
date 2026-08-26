@@ -1,5 +1,5 @@
 from src.core.board import BOARD_MAX_CELL, ENTRY_CELL, FINISH_CELL, Board
-from src.core.models import GameState, MoveRecord, MoveResult
+from src.core.models import GameState, MoveEvent, MoveRecord, MoveResult
 
 DEFAULT_TURN_LIMIT = 60
 
@@ -139,7 +139,7 @@ def apply_roll(
             final_position, transition = transition_lookup
 
     finished = final_position == FINISH_CELL
-    event = "finished" if finished else "moved"
+    event: MoveEvent = "finished" if finished else "moved"
 
     new_state = GameState(
         position=final_position,

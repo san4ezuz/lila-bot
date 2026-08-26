@@ -5,6 +5,7 @@ from aiogram.types import CallbackQuery, Message
 
 from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient
+from src.bot.utils import callback_message
 from src.config import get_settings
 
 router = Router(name="game")
@@ -13,13 +14,17 @@ router = Router(name="game")
 @router.callback_query(F.data == "roll")
 async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
     await callback.answer()
+    msg = callback_message(callback)
+    if msg is None:
+        return
+
     data = await state.get_data()
     game_id = data["game_id"]
 
     try:
         result = await api.roll(game_id, idempotency_key=callback.id)
     except ApiError:
-        await callback.message.answer(texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.roll_kb())
+        await msg.answer(texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.roll_kb())
         return
 
     settings = get_settings()
@@ -32,26 +37,27 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
 
     if result.finished:
         finish = await api.finish_game(game_id)
-        await callback.message.answer(body)
-        await callback.message.answer(
-            finish.summary + texts.FINISHED_SUFFIX, reply_markup=keyboards.start_game_kb()
-        )
+        await msg.answer(body)
+        await msg.answer(finish.summary + texts.FINISHED_SUFFIX, reply_markup=keyboards.start_game_kb())
         return
 
     if result.extra_roll:
-        await callback.message.answer(body, reply_markup=keyboards.roll_kb())
+        await msg.answer(body, reply_markup=keyboards.roll_kb())
         return
 
     if result.cell is not None:
-        await callback.message.answer(f"{body}\n\n{texts.ASK_FOR_TEXT_RESPONSE}", reply_markup=keyboards.response_kb())
+        await msg.answer(f"{body}\n\n{texts.ASK_FOR_TEXT_RESPONSE}", reply_markup=keyboards.response_kb())
     else:
-        await callback.message.answer(body, reply_markup=keyboards.roll_kb())
+        await msg.answer(body, reply_markup=keyboards.roll_kb())
 
 
 @router.callback_query(F.data == "skip_response")
 async def on_skip_response(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    await callback.message.answer(texts.SKIPPED_RESPONSE_ACK, reply_markup=keyboards.roll_kb())
+    msg = callback_message(callback)
+    if msg is None:
+        return
+    await msg.answer(texts.SKIPPED_RESPONSE_ACK, reply_markup=keyboards.roll_kb())
 
 
 @router.message(StateFilter(None), F.text)
@@ -61,7 +67,7 @@ async def on_player_response(message: Message, state: FSMContext, api: GameApiCl
     if game_id is None:
         return  # no active game in this chat yet — nothing to respond to
 
-    text = message.text.strip()
+    text = (message.text or "").strip()
     if len(text) > texts.MAX_PLAYER_MESSAGE_LENGTH:
         await message.answer(texts.MESSAGE_TOO_LONG)
         return

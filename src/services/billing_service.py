@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,7 +93,7 @@ class ParsedTributePayment:
     currency: str
 
 
-def parse_webhook_payload(payload: dict) -> ParsedTributePayment | None:
+def parse_webhook_payload(payload: dict[str, Any]) -> ParsedTributePayment | None:
     """Returns None for events we should acknowledge but not act on: a recognized non-success
     event (refund/cancel/failure), or a shape we don't recognize at all — never guess and grant
     on an event we can't positively identify as a successful payment."""
@@ -109,8 +110,9 @@ def parse_webhook_payload(payload: dict) -> ParsedTributePayment | None:
         return None
 
     # Some event families nest the object under "payload"; try both root and nested.
-    body = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
-    user = body.get("user") or payload.get("user") or {}
+    nested = payload.get("payload")
+    body: dict[str, Any] = nested if isinstance(nested, dict) else payload
+    user: dict[str, Any] = body.get("user") or payload.get("user") or {}
 
     telegram_id = (
         user.get("telegramId")
@@ -148,7 +150,7 @@ class BillingService:
         external_id: str,
         amount: float,
         currency: str,
-        raw_payload: dict,
+        raw_payload: dict[str, Any],
     ) -> Payment:
         existing = await self.payments.get_by_external_id("tribute", external_id)
         if existing is not None:

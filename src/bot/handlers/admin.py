@@ -16,7 +16,7 @@ router = Router(name="admin")
 @router.message(Command("grant"))
 async def cmd_grant(message: Message, command: CommandObject, api: GameApiClient) -> None:
     settings = get_settings()
-    if message.from_user.id not in settings.admin_telegram_ids:
+    if message.from_user is None or message.from_user.id not in settings.admin_telegram_ids:
         return  # silently ignore — don't reveal the command exists to non-admins
 
     if not command.args:

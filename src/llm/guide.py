@@ -11,6 +11,7 @@ losing the player's move (docs/PLAN.md §8.5).
 
 import asyncio
 import logging
+from typing import Literal
 
 import anthropic
 
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 _CALL_TIMEOUT_SECONDS = 40
 
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
 
 def _system_block() -> list[dict]:
     return [{"type": "text", "text": GUIDE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
@@ -36,14 +39,17 @@ def _system_block() -> list[dict]:
 async def _call(
     context: str,
     max_tokens: int,
-    effort: str,
+    effort: Effort,
     fallback: str,
 ) -> str:
     client = get_client()
     settings = get_settings()
     try:
+        # The dict literals below are the plain wire shapes from Anthropic's Messages API
+        # (docs/PLAN.md §8.2); typing them as the SDK's exact TypedDicts is more ceremony than
+        # value here, so this one call is exempted from strict overload matching.
         message = await asyncio.wait_for(
-            client.messages.create(
+            client.messages.create(  # type: ignore[call-overload]
                 model=settings.llm_model,
                 max_tokens=max_tokens,
                 system=_system_block(),

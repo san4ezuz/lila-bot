@@ -21,7 +21,7 @@ async def tribute_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
     trbt_signature: str | None = Header(default=None, alias="trbt-signature"),
-):
+) -> WebhookAck:
     """See src.services.billing_service module docstring for what's confirmed vs. inferred
     about Tribute's actual webhook contract."""
     settings = get_settings()
@@ -53,7 +53,7 @@ async def tribute_webhook(
 
 
 @admin_router.post("/admin/grant", response_model=AdminGrantResponse)
-async def admin_grant(body: AdminGrantRequest, db: AsyncSession = Depends(get_db)):
+async def admin_grant(body: AdminGrantRequest, db: AsyncSession = Depends(get_db)) -> AdminGrantResponse:
     """Manual fallback for when a Tribute webhook never arrives despite a real payment — see
     docs/PLAN.md §11.2. Authorization for *who* may call this is the bot's job (it only exposes
     the /grant command to docs/PLAN.md's admin telegram IDs); this endpoint only enforces the

@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery, Message
 from src.bot import keyboards, texts
 from src.bot.api_client import GameApiClient, PaymentRequiredError
 from src.bot.states import GameStates
+from src.bot.utils import callback_message
 
 router = Router(name="start")
 
@@ -24,6 +25,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "start_game")
 async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
     await callback.answer()
+    msg = callback_message(callback)
+    if msg is None:
+        return
+
     user = callback.from_user
     try:
         result = await api.start_game(
@@ -31,17 +36,17 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
         )
     except PaymentRequiredError as exc:
         text = texts.PAYWALL_MESSAGE.format(price=exc.price)
-        await callback.message.answer(text, reply_markup=keyboards.paywall_kb(exc.pay_url))
+        await msg.answer(text, reply_markup=keyboards.paywall_kb(exc.pay_url))
         return
 
     await state.update_data(game_id=str(result.game_id))
 
     if result.status == "setup":
         await state.set_state(GameStates.waiting_intention)
-        await callback.message.answer(result.guide_message)
+        await msg.answer(result.guide_message)
     else:
         await state.set_state(None)
-        await callback.message.answer(result.guide_message, reply_markup=keyboards.roll_kb())
+        await msg.answer(result.guide_message, reply_markup=keyboards.roll_kb())
 
 
 @router.message(GameStates.waiting_intention)
