@@ -174,7 +174,9 @@ async def test_skip_response_acks_and_logs_event(client, db_session, unique_tele
 
     from sqlalchemy import select
 
-    result = await db_session.execute(select(Event).where(Event.name == "response_skipped"))
+    result = await db_session.execute(
+        select(Event).where(Event.name == "response_skipped", Event.game_id == game_id)
+    )
     assert result.scalar_one_or_none() is not None
 
 
@@ -204,7 +206,9 @@ async def test_feedback_is_accepted_on_a_finished_game(client, db_session, uniqu
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
-    result = await db_session.execute(select(Event).where(Event.name == "feedback_given"))
+    result = await db_session.execute(
+        select(Event).where(Event.name == "feedback_given", Event.game_id == game_id)
+    )
     event = result.scalar_one()
     assert event.props == {"text": "здорово"}
 

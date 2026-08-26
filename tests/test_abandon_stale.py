@@ -27,7 +27,7 @@ async def test_abandon_stale_games_marks_inactive_games_and_logs_event(db_sessio
     assert count == 1
     assert game.status == "abandoned"
 
-    result = await db_session.execute(select(Event).where(Event.name == "game_abandoned"))
+    result = await db_session.execute(select(Event).where(Event.name == "game_abandoned", Event.game_id == game.id))
     event = result.scalar_one()
     assert event.game_id == game.id
     assert event.user_id == user.id

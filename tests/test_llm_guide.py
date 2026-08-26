@@ -53,6 +53,26 @@ async def test_call_falls_back_on_api_error(monkeypatch):
     assert result == "FALLBACK TEXT"
 
 
+async def test_call_falls_back_on_missing_credentials(monkeypatch):
+    """Regression test for a real bug found via a live smoke test (not caught by mocks alone):
+    the SDK raises a plain TypeError — not an AnthropicError subclass — when it can't resolve
+    credentials at request-build time (e.g. ANTHROPIC_API_KEY unset). Before this was handled,
+    it 500'd the whole request instead of falling back."""
+
+    async def _raise_type_error(*args, **kwargs):
+        raise TypeError(
+            "Could not resolve authentication method. Expected one of api_key, auth_token, "
+            "or credentials to be set."
+        )
+
+    fake_client = SimpleNamespace(messages=SimpleNamespace(create=_raise_type_error))
+    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+
+    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="NO KEY FALLBACK")
+
+    assert result == "NO KEY FALLBACK"
+
+
 async def test_call_falls_back_on_timeout(monkeypatch):
     async def _hangs(*args, **kwargs):
         import asyncio

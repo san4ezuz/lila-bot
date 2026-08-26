@@ -61,6 +61,14 @@ async def _call(
     except (TimeoutError, anthropic.APIError) as exc:
         logger.warning("guide LLM call failed, using fallback: %s", exc)
         return fallback
+    except TypeError as exc:
+        # The SDK raises a plain TypeError (not an AnthropicError subclass) when it can't
+        # resolve credentials at request-build time — e.g. ANTHROPIC_API_KEY unset. Confirmed by
+        # a live smoke test against a real running server (not just mocks): without this, a
+        # misconfigured/missing key 500s the whole request instead of falling back, defeating
+        # the entire point of this function (docs/PLAN.md §8.5 — never lose the player's move).
+        logger.error("guide LLM call misconfigured (likely missing API key), using fallback: %s", exc)
+        return fallback
 
     text = extract_text(message)
     return text or fallback
