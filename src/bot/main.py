@@ -7,7 +7,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from src.bot.api_client import GameApiClient
-from src.bot.handlers import game, start
+from src.bot.handlers import admin, game, start
 from src.config import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +22,7 @@ async def main() -> None:
     bot = Bot(token=settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(start.router)
+    dp.include_router(admin.router)
     dp.include_router(game.router)
 
     api_client = GameApiClient()

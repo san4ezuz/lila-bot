@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from src.api.schemas import (
+    AdminGrantResponse,
     FinishGameResponse,
     GameStateResponse,
     RespondResponse,
@@ -106,3 +107,9 @@ class GameApiClient:
     async def get_user_status(self, telegram_id: int) -> UserStatusResponse:
         response = await self._request("GET", f"/users/{telegram_id}/status")
         return UserStatusResponse.model_validate(response.json())
+
+    async def admin_grant(self, telegram_id: int, count: int = 1) -> AdminGrantResponse:
+        response = await self._request(
+            "POST", "/admin/grant", json={"telegram_id": telegram_id, "count": count}
+        )
+        return AdminGrantResponse.model_validate(response.json())

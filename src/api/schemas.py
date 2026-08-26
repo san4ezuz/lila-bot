@@ -104,3 +104,17 @@ class UserStatusResponse(BaseModel):
     has_free_game_used: bool
     paid_games_available: int
     active_game_id: uuid.UUID | None
+
+
+class WebhookAck(BaseModel):
+    ok: bool = True
+
+
+class AdminGrantRequest(BaseModel):
+    telegram_id: int
+    count: int = 1
+
+
+class AdminGrantResponse(BaseModel):
+    telegram_id: int
+    paid_games_available: int

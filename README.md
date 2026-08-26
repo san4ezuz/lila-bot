@@ -48,7 +48,13 @@ python scripts/play_cli.py  # симуляция 1000 партий, провер
       **Хендлеры не проверены вживую в Telegram** — нет `BOT_TOKEN` в этой сессии; нужен
       реальный прогон `python -m src.bot.main` с токеном от BotFather перед Этапом 7
 - [ ] Этап 7 — тестовые партии и тюнинг тона
-- [ ] Этап 8 — Tribute
+- [x] Этап 8 — Tribute: `src/services/billing_service.py` (проверка подписи вебхука,
+      идемпотентность по `external_id`, начисление платной партии, уведомление в Telegram через
+      raw Bot API), `POST /payments/tribute/webhook` + `POST /admin/grant` (роутер `payments.py`),
+      команда `/grant` в боте (только для `ADMIN_TELEGRAM_IDS`). **Формат вебхука — placeholder**
+      (HMAC-SHA256 по общепринятой схеме, заголовок `X-Tribute-Signature`): нужно сверить с
+      актуальной документацией Tribute перед продакшеном, см. предупреждение в начале файла.
+      `tests/test_billing.py` (11 тестов) — идемпотентность и проверка подписи покрыты
 - [ ] Этап 9 — метрики
 - [ ] Этап 10 — деплой
 

@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,13 @@ class Settings(BaseSettings):
     env: str = "local"
 
     turn_limit: int = 60
+    admin_telegram_ids_raw: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
+
+    @property
+    def admin_telegram_ids(self) -> set[int]:
+        return {
+            int(part) for part in self.admin_telegram_ids_raw.split(",") if part.strip()
+        }
 
 
 @lru_cache
