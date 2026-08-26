@@ -36,6 +36,14 @@ def _system_block() -> list[dict]:
     return [{"type": "text", "text": GUIDE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
 
+def _supports_effort(model: str) -> bool:
+    """`output_config.effort` 400s on older/smaller models (confirmed for Haiku 4.5 — see
+    claude-api skill's thinking/effort reference table). Keep this an allowlist-by-exclusion of
+    known non-supporting families rather than a hardcoded model list, since docs/PLAN.md §5's
+    LLM_MODEL is operator-configurable and may change during testing."""
+    return "haiku" not in model.lower()
+
+
 async def _call(
     context: str,
     max_tokens: int,
@@ -44,6 +52,9 @@ async def _call(
 ) -> str:
     client = get_client()
     settings = get_settings()
+    kwargs: dict = {}
+    if _supports_effort(settings.llm_model):
+        kwargs["output_config"] = {"effort": effort}
     try:
         # The dict literals below are the plain wire shapes from Anthropic's Messages API
         # (docs/PLAN.md §8.2); typing them as the SDK's exact TypedDicts is more ceremony than
@@ -52,9 +63,9 @@ async def _call(
             client.messages.create(  # type: ignore[call-overload]
                 model=settings.llm_model,
                 max_tokens=max_tokens,
-                system=_system_block(),
+                system=_system_block(),  # type: ignore[arg-type]
                 messages=[{"role": "user", "content": context}],
-                output_config={"effort": effort},
+                **kwargs,
             ),
             timeout=_CALL_TIMEOUT_SECONDS,
         )
@@ -89,7 +100,7 @@ def intro_message() -> str:
 def intention_ack_message(intention: str) -> str:
     return (
         f"Понимаю. Ты пришёл с этим: «{intention}». Буду держать это в уме на протяжении всего "
-        "пути. Чтобы войти в игру, нужно выбросить 6 — бросай, когда будешь готов."
+        "пути. Начинаем — твоя фишка уже на доске."
     )
 
 

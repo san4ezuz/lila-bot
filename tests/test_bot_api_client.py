@@ -34,14 +34,10 @@ async def api_client(db_session):
 async def test_start_and_roll_through_client(api_client, unique_telegram_id):
     start = await api_client.start_game(unique_telegram_id, intention="проверка клиента")
     assert start.status == "active"
+    assert start.in_play is True  # entry is automatic — see docs/RULES.md §2
 
-    entered = False
-    for _ in range(50):
-        roll = await api_client.roll(str(start.game_id))
-        if roll.event == "entered":
-            entered = True
-            break
-    assert entered
+    roll = await api_client.roll(str(start.game_id))
+    assert roll.event in ("moved", "finished", "blocked_overshoot")
 
     state = await api_client.get_game(str(start.game_id))
     assert state.in_play is True

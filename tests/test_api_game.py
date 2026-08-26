@@ -52,17 +52,13 @@ async def test_full_game_playthrough_via_api(client, unique_telegram_id):
     assert start.status_code == 200
     body = start.json()
     assert body["status"] == "active"
+    assert body["in_play"] is True  # entry is automatic — see docs/RULES.md §2
+    assert body["position"] == 6
     game_id = body["game_id"]
 
-    # Enter the game — roll until a 6 comes up (deterministic within a bounded number of tries).
-    entered = False
-    for _ in range(50):
-        r = await client.post(f"/game/{game_id}/roll")
-        assert r.status_code == 200
-        if r.json()["event"] == "entered":
-            entered = True
-            break
-    assert entered
+    r = await client.post(f"/game/{game_id}/roll")
+    assert r.status_code == 200
+    assert r.json()["event"] in ("moved", "finished", "blocked_overshoot")
 
     respond = await client.post(f"/game/{game_id}/respond", json={"text": "Чувствую сопротивление."})
     assert respond.status_code == 200

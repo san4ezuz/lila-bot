@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
-from src.core.board import Board, get_default_board
+from src.core.board import ENTRY_CELL, Board, get_default_board
 from src.core.models import GameState, MoveResult
 from src.core.rules import apply_roll
 from src.db.models import Game, User
@@ -95,9 +95,26 @@ class GameService:
 
     async def set_intention(self, game: Game, intention: str) -> str:
         await self.games.set_intention(game, intention)
-        guide_message = guide.intention_ack_message(intention)
-        await self.messages.create(game.id, "guide", guide_message)
         await self.events.log("intention_set", game.user_id, game.id)
+
+        # Entry no longer requires rolling a 6 — decided after playtesting found the entry gate
+        # tedious (could take many rolls before the game visibly "starts"). The player is placed
+        # on the entry cell immediately; docs/RULES.md §2 updated accordingly. turn stays 0 since
+        # no die was actually rolled — the player's first real roll is turn 1, same as before.
+        entered_state = GameState(position=ENTRY_CELL, in_play=True, turn=0)
+        await self.games.apply_state(game, entered_state)
+
+        cell = self.board.get_cell(ENTRY_CELL)
+        cell_message = await guide.interpret_cell(
+            intention=intention,
+            cell=cell,
+            event="entered",
+            transition=None,
+            visited=[],
+            recent_player_answers=[],
+        )
+        guide_message = f"{guide.intention_ack_message(intention)}\n\n{cell_message}"
+        await self.messages.create(game.id, "guide", guide_message)
         return guide_message
 
     async def roll(
