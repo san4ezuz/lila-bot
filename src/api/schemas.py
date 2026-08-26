@@ -114,6 +114,14 @@ class SkipAck(BaseModel):
     ok: bool = True
 
 
+class FeedbackRequest(BaseModel):
+    text: str
+
+
+class FeedbackAck(BaseModel):
+    ok: bool = True
+
+
 class AdminGrantRequest(BaseModel):
     telegram_id: int
     count: int = 1

@@ -5,6 +5,7 @@ from aiogram.types import CallbackQuery, Message
 
 from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient
+from src.bot.states import GameStates
 from src.bot.utils import callback_message
 from src.config import get_settings
 
@@ -38,7 +39,10 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
     if result.finished:
         finish = await api.finish_game(game_id)
         await msg.answer(body)
-        await msg.answer(finish.summary + texts.FINISHED_SUFFIX, reply_markup=keyboards.start_game_kb())
+        await msg.answer(finish.summary + texts.FINISHED_SUFFIX)
+        # FINISHED_SUFFIX ends with the one-word feedback question — the next text message in
+        # this chat is the answer to that, not a reply to a cell (see on_feedback below).
+        await state.set_state(GameStates.waiting_feedback)
         return
 
     if result.extra_roll:
@@ -67,6 +71,22 @@ async def on_skip_response(callback: CallbackQuery, state: FSMContext, api: Game
             pass  # not worth blocking the player over an analytics event failing to log
 
     await msg.answer(texts.SKIPPED_RESPONSE_ACK, reply_markup=keyboards.roll_kb())
+
+
+@router.message(GameStates.waiting_feedback, F.text)
+async def on_feedback(message: Message, state: FSMContext, api: GameApiClient) -> None:
+    data = await state.get_data()
+    game_id = data.get("game_id")
+    text = (message.text or "").strip()[: texts.MAX_PLAYER_MESSAGE_LENGTH]
+
+    if game_id is not None and text:
+        try:
+            await api.feedback(game_id, text)
+        except ApiError:
+            pass  # not worth blocking the player over an analytics event failing to log
+
+    await state.clear()
+    await message.answer(texts.FEEDBACK_THANKS, reply_markup=keyboards.start_game_kb())
 
 
 @router.message(StateFilter(None), F.text)

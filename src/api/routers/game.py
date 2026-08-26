@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import get_db, require_internal_token
 from src.api.schemas import (
     CellOut,
+    FeedbackAck,
+    FeedbackRequest,
     FinishGameResponse,
     GameStateResponse,
     MoveOut,
@@ -167,6 +169,16 @@ async def finish_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) ->
     game = await service.get_game(game_id)
     summary, stats = await service.finish_game(game)
     return FinishGameResponse(summary=summary, stats=stats)
+
+
+@router.post("/game/{game_id}/feedback", response_model=FeedbackAck)
+async def feedback(
+    game_id: uuid.UUID, body: FeedbackRequest, db: AsyncSession = Depends(get_db)
+) -> FeedbackAck:
+    service = GameService(db)
+    game = await service.get_game(game_id)
+    await service.record_feedback(game, body.text)
+    return FeedbackAck()
 
 
 @router.get("/users/{telegram_id}/status", response_model=UserStatusResponse)

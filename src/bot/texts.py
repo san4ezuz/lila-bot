@@ -14,6 +14,7 @@ ASK_FOR_TEXT_RESPONSE = "Можешь ответить текстом — или
 SKIPPED_RESPONSE_ACK = "Хорошо, идём дальше."
 
 FINISHED_SUFFIX = "\n\nПартия завершена. Спасибо, что прошёл этот путь. Как тебе игра — что бы ты сказал одним словом?"
+FEEDBACK_THANKS = "Спасибо! Если захочешь пройти путь ещё раз — я здесь."
 
 PROGRESS_LINE = "Клетка {position} · ход {turn} из {turn_limit}"
 

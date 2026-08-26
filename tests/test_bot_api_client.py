@@ -94,3 +94,13 @@ async def test_get_user_status_reflects_active_game(api_client, unique_telegram_
 
     status_after = await api_client.get_user_status(unique_telegram_id)
     assert status_after.active_game_id == start.game_id
+
+
+async def test_skip_and_feedback_round_trip_without_error(api_client, unique_telegram_id):
+    start = await api_client.start_game(unique_telegram_id, intention="тест")
+    game_id = str(start.game_id)
+
+    await api_client.skip(game_id)  # must not raise
+
+    await api_client.finish_game(game_id)
+    await api_client.feedback(game_id, "интересно")  # must not raise on a finished game

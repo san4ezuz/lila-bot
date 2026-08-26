@@ -95,6 +95,9 @@ class GameApiClient:
     async def skip(self, game_id: str) -> None:
         await self._request("POST", f"/game/{game_id}/skip")
 
+    async def feedback(self, game_id: str, text: str) -> None:
+        await self._request("POST", f"/game/{game_id}/feedback", json={"text": text})
+
     async def respond(self, game_id: str, text: str) -> RespondResponse:
         response = await self._request("POST", f"/game/{game_id}/respond", json={"text": text})
         return RespondResponse.model_validate(response.json())

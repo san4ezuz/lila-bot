@@ -227,6 +227,15 @@ class GameService:
             raise GameNotFoundError(str(game_id))
         return game
 
+    async def record_feedback(self, game: Game, text: str) -> None:
+        """Captures the answer to the finish-time feedback question as a structured event —
+        docs/PLAN.md §12's `feedback_given`. Deliberately not gated on game.status: the
+        conversational prompt happens right after finish, so the game is already 'finished' by
+        the time the player replies."""
+        await self.events.log(
+            "feedback_given", game.user_id, game.id, {"text": text[:500]}
+        )
+
     async def abandon_stale_games(self, hours: int = 48) -> int:
         """Marks games with no activity for `hours` as abandoned and logs `game_abandoned` per
         game (docs/PLAN.md §12) — meant to run on a schedule, see scripts/abandon_stale_games.py.

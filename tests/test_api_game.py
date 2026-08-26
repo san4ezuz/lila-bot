@@ -189,6 +189,26 @@ async def test_skip_response_on_finished_game_returns_409(client, unique_telegra
     assert resp.status_code == 409
 
 
+async def test_feedback_is_accepted_on_a_finished_game(client, db_session, unique_telegram_id):
+    from sqlalchemy import select
+
+    from src.db.models import Event
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+    await client.post(f"/game/{game_id}/finish")
+
+    resp = await client.post(f"/game/{game_id}/feedback", json={"text": "здорово"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    result = await db_session.execute(select(Event).where(Event.name == "feedback_given"))
+    event = result.scalar_one()
+    assert event.props == {"text": "здорово"}
+
+
 async def test_safety_flag_is_surfaced_on_crisis_marker(client, unique_telegram_id):
     start = await client.post(
         "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}

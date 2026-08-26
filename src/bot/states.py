@@ -7,3 +7,4 @@ class GameStates(StatesGroup):
     player's intention, not a reply to a cell"."""
 
     waiting_intention = State()
+    waiting_feedback = State()
