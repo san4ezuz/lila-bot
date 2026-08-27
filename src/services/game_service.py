@@ -105,7 +105,8 @@ class GameService:
 
         # Entry requires rolling a 6 (docs/RULES.md §2) — the player's next roll is their first
         # entry attempt, so nothing moves yet here.
-        guide_message = guide.intention_ack_message(intention)
+        gender = await self._user_gender(game.user_id)
+        guide_message = guide.intention_ack_message(intention, gender)
         await self.messages.create(game.id, "guide", guide_message)
         return guide_message
 
@@ -141,34 +142,59 @@ class GameService:
         return result, guide_message, can_roll
 
     async def _roll_guide_message(self, game: Game, result: MoveResult) -> str:
+        gender = await self._user_gender(game.user_id)
+
         if result.event == "not_entered" or result.final_position is None:
             return await guide.not_entered_message(
-                game.intention, result.roll, result.turn, ENTRY_GUARANTEE_ATTEMPTS
+                game.intention, result.roll, result.turn, ENTRY_GUARANTEE_ATTEMPTS, gender
             )
         if result.event == "turn_limit_reached":
             return guide.turn_limit_message()
 
         cell = self.board.get_cell(result.final_position)
         if result.event == "blocked_overshoot":
-            return guide.blocked_overshoot_message(cell)
+            message = guide.blocked_overshoot_message(cell)
+        elif result.event == "entered" and result.roll == ENTRY_CELL and result.turn == 1:
+            # Natural six on the very first attempt — everyone starts here, so celebrate the
+            # request instead of a deep interpretation of "Заблуждение" that adds nothing yet.
+            message = guide.first_try_entry_message(game.intention, gender)
+        else:
+            # entered (later/forced) / moved / finished all land on a new cell — worth an LLM
+            # interpretation. On a snake/arrow transition, also hand over the source cell the
+            # player was swept past without ever landing on, so the guide can name it.
+            visited = await self._visited_names(game.id)
+            recent_answers = await self._recent_player_answers(game.id)
+            skipped_cell = (
+                self.board.get_cell(result.raw_position)
+                if result.transition is not None and result.raw_position is not None
+                else None
+            )
+            cell_message = await guide.interpret_cell(
+                intention=game.intention,
+                cell=cell,
+                event=result.event,
+                transition=result.transition,
+                skipped_cell=skipped_cell,
+                visited=visited,
+                recent_player_answers=recent_answers,
+                gender=gender,
+            )
+            # Entry guaranteed by ENTRY_GUARANTEE_ATTEMPTS fires without an actual 6 — say so
+            # before the LLM's interpretation of the cell itself.
+            if result.event == "entered" and result.roll != ENTRY_CELL:
+                message = f"{guide.forced_entry_message()}\n\n{cell_message}"
+            else:
+                message = cell_message
 
-        # entered / moved / finished all land on a new cell — worth an LLM interpretation.
-        visited = await self._visited_names(game.id)
-        recent_answers = await self._recent_player_answers(game.id)
-        cell_message = await guide.interpret_cell(
-            intention=game.intention,
-            cell=cell,
-            event=result.event,
-            transition=result.transition,
-            visited=visited,
-            recent_player_answers=recent_answers,
-        )
+        # Rolling a 6 always grants another roll (docs/RULES.md §3) — explain the mechanic
+        # rather than silently handing back the roll button again.
+        if result.roll == 6 and result.extra_roll:
+            message = f"{message}\n\n{guide.six_extra_roll_note()}"
+        return message
 
-        # Entry guaranteed by ENTRY_GUARANTEE_ATTEMPTS fires without an actual 6 — say so before
-        # handing off to the LLM's interpretation of the cell itself.
-        if result.event == "entered" and result.roll != ENTRY_CELL:
-            return f"{guide.forced_entry_message()}\n\n{cell_message}"
-        return cell_message
+    async def _user_gender(self, user_id: int) -> str | None:
+        user = await self.session.get(User, user_id)
+        return user.gender if user else None
 
     async def _visited_names(self, game_id: uuid.UUID) -> list[str]:
         moves = await self.moves.list_for_game(game_id)
@@ -203,7 +229,8 @@ class GameService:
             guide_message = guide.safety_referral_message()
         elif game.position is not None:
             cell = self.board.get_cell(game.position)
-            guide_message = await guide.deepen(game.intention, cell, text)
+            gender = await self._user_gender(game.user_id)
+            guide_message = await guide.deepen(game.intention, cell, text, gender)
         else:
             # Player replied before their first roll landed them on a cell — nothing to deepen
             # yet; a static nudge back to the mechanic is enough (see docs/PLAN.md §8.1).
@@ -223,7 +250,8 @@ class GameService:
             raise GameNotActiveError("game cannot be finished from its current status")
 
         visited = await self._visited_names(game.id)
-        summary = await guide.summarize_game(game.intention, visited)
+        gender = await self._user_gender(game.user_id)
+        summary = await guide.summarize_game(game.intention, visited, gender)
         await self.games.set_summary(game, summary)
 
         if game.status != "finished":
@@ -278,10 +306,16 @@ class GameService:
                 "has_free_game_used": False,
                 "paid_games_available": 0,
                 "active_game_id": None,
+                "gender": None,
             }
         active = await self.games.get_active_for_user(user.id)
         return {
             "has_free_game_used": user.has_free_game_used,
             "paid_games_available": user.paid_games_available,
             "active_game_id": active.id if active else None,
+            "gender": user.gender,
         }
+
+    async def set_gender(self, telegram_id: int, gender: str) -> None:
+        user = await self.users.get_or_create(telegram_id)
+        await self.users.set_gender(user, gender)

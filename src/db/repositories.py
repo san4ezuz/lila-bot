@@ -45,6 +45,10 @@ class UserRepository:
         user.reminders_opt_out = opted_out
         await self._session.flush()
 
+    async def set_gender(self, user: User, gender: str) -> None:
+        user.gender = gender
+        await self._session.flush()
+
 
 class GameRepository:
     def __init__(self, session: AsyncSession) -> None:

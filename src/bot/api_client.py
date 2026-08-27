@@ -120,6 +120,9 @@ class GameApiClient:
         )
         return AdminGrantResponse.model_validate(response.json())
 
+    async def set_gender(self, telegram_id: int, gender: str) -> None:
+        await self._request("POST", f"/users/{telegram_id}/gender", json={"gender": gender})
+
     async def opt_out_reminders(self, telegram_id: int) -> None:
         await self._request("POST", f"/users/{telegram_id}/reminders/opt-out")
 

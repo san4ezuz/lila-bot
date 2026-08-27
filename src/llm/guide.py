@@ -37,6 +37,14 @@ def _system_block() -> list[dict]:
     return [{"type": "text", "text": GUIDE_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
 
 
+def _gendered(male: str, female: str, neutral: str, gender: str | None) -> str:
+    if gender == "male":
+        return male
+    if gender == "female":
+        return female
+    return neutral
+
+
 def _supports_effort(model: str) -> bool:
     """`output_config.effort` 400s on older/smaller models (confirmed for Haiku 4.5 — see
     claude-api skill's thinking/effort reference table). Keep this an allowlist-by-exclusion of
@@ -98,10 +106,28 @@ def intro_message() -> str:
     )
 
 
-def intention_ack_message(intention: str) -> str:
+def intention_ack_message(intention: str, gender: str | None = None) -> str:
+    came = _gendered("пришёл", "пришла", "пришёл(-а)", gender)
     return (
-        f"Понимаю. Ты пришёл с этим: «{intention}». Буду держать это в уме на протяжении всего "
+        f"Понимаю. Ты {came} с этим: «{intention}». Буду держать это в уме на протяжении всего "
         "пути. Чтобы войти в игру, по правилам «Лилы» нужно выбросить шестёрку — бросай кубик."
+    )
+
+
+def first_try_entry_message(intention: str | None, gender: str | None = None) -> str:
+    """Roll #1 landed a natural six — the rare, lucky case. Deliberately not run through
+    interpret_cell(): every game starts on this same cell, so a deep LLM reading of it would
+    say the same thing to every player on turn one. Celebrate the roll and the request instead
+    (per product feedback: "поздравить и сказать что запрос реально важен, особо не
+    анализировать")."""
+    entered = _gendered("вошёл", "вошла", "вошёл(-а)", gender)
+    if intention:
+        request_line = f" Ты сразу {entered} с запросом «{intention}» — и это само по себе важно: он поведёт тебя дальше."
+    else:
+        request_line = f" Ты сразу {entered} в игру."
+    return (
+        "Шестёрка с первого броска — редкая удача, поздравляю!" + request_line + " Клетку "
+        "«Заблуждение» разбирать подробно не будем — с неё начинают все, настоящий путь впереди."
     )
 
 
@@ -110,6 +136,12 @@ def forced_entry_message() -> str:
         "Шестёрка так и не выпала — но иногда дверь открывается не по нашей готовности, а по "
         "своему часу. Ты входишь в игру."
     )
+
+
+def six_extra_roll_note() -> str:
+    """Rolling a 6 always grants another roll — the classic rule, treated here as always a
+    "yes" from the board (product feedback: "это типо всегда «да», нужно красиво объяснять")."""
+    return "🎲 Шестёрка — это всегда «да»: держи ещё один бросок прямо сейчас."
 
 
 def blocked_overshoot_message(cell: Cell) -> str:
@@ -142,7 +174,11 @@ def safety_referral_message() -> str:
 
 
 async def not_entered_message(
-    intention: str | None, roll: int, attempt: int, guarantee_after: int
+    intention: str | None,
+    roll: int,
+    attempt: int,
+    guarantee_after: int,
+    gender: str | None = None,
 ) -> str:
     """`attempt` is how many entry rolls have been made so far (including this one); once it
     reaches `guarantee_after`, apply_roll() lets the player in regardless of the roll — see
@@ -152,7 +188,7 @@ async def not_entered_message(
     waiting for. Attempt/guarantee numbers are only fed to the LLM as private context to shift
     tone near the guarantee, never asked to be recited to the player."""
     context = build_not_entered_context(
-        intention, roll, near_guarantee=attempt >= guarantee_after - 1
+        intention, roll, near_guarantee=attempt >= guarantee_after - 1, gender=gender
     )
     fallback = f"Выпало {roll} — не шестёрка. Бросай ещё раз, дорога откроется."
     return await _call(context, max_tokens=150, effort="low", fallback=fallback)
@@ -165,6 +201,8 @@ async def interpret_cell(
     transition: str | None,
     visited: list[str],
     recent_player_answers: list[str],
+    skipped_cell: Cell | None = None,
+    gender: str | None = None,
 ) -> str:
     context = build_interpret_cell_context(
         intention=intention,
@@ -177,6 +215,10 @@ async def interpret_cell(
         transition=transition,
         visited=visited[-15:],
         recent_player_answers=recent_player_answers[-2:],
+        skipped_cell_id=skipped_cell.id if skipped_cell else None,
+        skipped_cell_name=skipped_cell.name if skipped_cell else None,
+        skipped_cell_theme=skipped_cell.theme if skipped_cell else None,
+        gender=gender,
     )
     fallback = (
         f"Фишка на клетке {cell.id}, «{cell.name}». {cell.theme} {cell.questions[0]}"
@@ -184,14 +226,18 @@ async def interpret_cell(
     return await _call(context, max_tokens=400, effort="medium", fallback=fallback)
 
 
-async def deepen(intention: str | None, cell: Cell, player_text: str) -> str:
-    context = build_deepen_context(intention, cell.name, player_text)
+async def deepen(
+    intention: str | None, cell: Cell, player_text: str, gender: str | None = None
+) -> str:
+    context = build_deepen_context(intention, cell.name, player_text, gender=gender)
     fallback = "Слышу тебя. Идём дальше — бросай кубик, когда будешь готов."
     return await _call(context, max_tokens=350, effort="medium", fallback=fallback)
 
 
-async def summarize_game(intention: str | None, visited: list[str]) -> str:
-    context = build_summary_context(intention, visited)
+async def summarize_game(
+    intention: str | None, visited: list[str], gender: str | None = None
+) -> str:
+    context = build_summary_context(intention, visited, gender=gender)
     path = " → ".join(visited) if visited else "путь ещё не начался"
     fallback = (
         f"Вот путь, который ты прошёл за эту партию: {path}. "

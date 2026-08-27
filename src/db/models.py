@@ -34,6 +34,9 @@ class User(Base):
     has_free_game_used: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     paid_games_available: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     reminders_opt_out: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # 'male' | 'female' | 'skip' (explicitly declined) | None (never asked) — asked once per
+    # user, not per game, so correct address forms carry across a player's whole history.
+    gender: Mapped[str | None] = mapped_column(String(10))
 
 
 class Game(Base):

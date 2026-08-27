@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     env: str = "local"
 
-    turn_limit: int = 60
+    # None = no turn limit (product default, docs/RULES.md §5). Set TURN_LIMIT in .env for an
+    # operator-configured cap if ever needed again.
+    turn_limit: int | None = None
     admin_telegram_ids_raw: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 
     @property

@@ -24,6 +24,18 @@ def response_kb() -> InlineKeyboardMarkup:
     )
 
 
+def gender_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=texts.BTN_GENDER_MALE, callback_data="set_gender:male"),
+                InlineKeyboardButton(text=texts.BTN_GENDER_FEMALE, callback_data="set_gender:female"),
+            ],
+            [InlineKeyboardButton(text=texts.BTN_GENDER_SKIP, callback_data="set_gender:skip")],
+        ]
+    )
+
+
 def paywall_kb(pay_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_PAY, url=pay_url)]]

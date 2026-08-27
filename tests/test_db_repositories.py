@@ -37,6 +37,15 @@ async def test_free_game_flag_and_paid_game_balance(db_session, unique_telegram_
     assert user.paid_games_available == 1
 
 
+async def test_set_gender_persists_choice(db_session, unique_telegram_id):
+    repo = UserRepository(db_session)
+    user = await repo.get_or_create(unique_telegram_id)
+    assert user.gender is None
+
+    await repo.set_gender(user, "female")
+    assert user.gender == "female"
+
+
 async def test_game_lifecycle_and_state_sync(db_session, unique_telegram_id):
     users = UserRepository(db_session)
     games = GameRepository(db_session)

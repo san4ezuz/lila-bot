@@ -10,6 +10,10 @@ wiring up LLM/money, and rerun it whenever data/transitions.json or the turn lim
 Games start not-yet-entered (create_initial_state()), matching GameService.set_intention() —
 the "roll a 6 to enter" gate is back in the real product flow (docs/RULES.md §2), with entry
 guaranteed by ENTRY_GUARANTEE_ATTEMPTS rolls so it can't drag on indefinitely.
+
+Product default has no turn limit (docs/RULES.md §5 — removed after feedback that capping
+partial partии felt arbitrary), so `turn_limit_reached` won't show up in a default run of this
+script; pass a second CLI arg to still exercise/measure that path if useful.
 """
 
 import random
@@ -24,7 +28,7 @@ from src.core.dice import roll_dice
 from src.core.rules import DEFAULT_TURN_LIMIT, apply_roll, create_initial_state
 
 
-def play_one_game(rng: random.Random, turn_limit: int) -> tuple[int, str]:
+def play_one_game(rng: random.Random, turn_limit: int | None) -> tuple[int, str]:
     """Returns (turns_used, finish_reason)."""
     board = get_default_board()
     state = create_initial_state()
@@ -38,7 +42,7 @@ def play_one_game(rng: random.Random, turn_limit: int) -> tuple[int, str]:
 
 def main() -> None:
     n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
-    turn_limit = DEFAULT_TURN_LIMIT
+    turn_limit = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_TURN_LIMIT
     rng = random.Random(42)
 
     lengths: list[int] = []

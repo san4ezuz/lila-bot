@@ -7,6 +7,7 @@ from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient, PaymentRequiredError
 from src.bot.states import GameStates
 from src.bot.utils import callback_message, esc, typing_indicator
+from src.config import get_settings
 
 router = Router(name="start")
 
@@ -19,7 +20,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
-    await message.answer(texts.ABOUT_GAME_TEXT)
+    settings = get_settings()
+    await message.answer(texts.about_game_text(settings.price_second_game_rub))
 
 
 @router.callback_query(F.data == "about_game")
@@ -28,7 +30,10 @@ async def on_about_game(callback: CallbackQuery) -> None:
     msg = callback_message(callback)
     if msg is None:
         return
-    await msg.answer(texts.ABOUT_GAME_TEXT, reply_markup=keyboards.start_game_kb())
+    settings = get_settings()
+    await msg.answer(
+        texts.about_game_text(settings.price_second_game_rub), reply_markup=keyboards.start_game_kb()
+    )
 
 
 async def _begin_game(msg: Message, state: FSMContext, api: GameApiClient, user: User) -> None:
@@ -60,6 +65,32 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
     msg = callback_message(callback)
     if msg is None:
         return
+
+    # Ask once per user, right at the moment they actually mean to play, rather than on every
+    # /start — gender isn't needed until there's text to address them with.
+    try:
+        status = await api.get_user_status(callback.from_user.id)
+    except ApiError:
+        status = None
+    if status is not None and status.gender is None:
+        await msg.answer(texts.ASK_GENDER_TEXT, reply_markup=keyboards.gender_kb())
+        return
+
+    await _begin_game(msg, state, api, callback.from_user)
+
+
+@router.callback_query(F.data.startswith("set_gender:"))
+async def on_set_gender(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
+    await callback.answer()
+    msg = callback_message(callback)
+    if msg is None:
+        return
+
+    gender = (callback.data or "").split(":", 1)[1]
+    try:
+        await api.set_gender(callback.from_user.id, gender)
+    except ApiError:
+        pass  # not worth blocking the player over this not saving — worst case, asked again
     await _begin_game(msg, state, api, callback.from_user)
 
 

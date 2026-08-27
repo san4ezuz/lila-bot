@@ -220,6 +220,18 @@ async def test_feedback_is_accepted_on_a_finished_game(client, db_session, uniqu
     assert event.props == {"text": "здорово"}
 
 
+async def test_set_gender_endpoint_is_reflected_in_user_status(client, unique_telegram_id):
+    before = await client.get(f"/users/{unique_telegram_id}/status")
+    assert before.json()["gender"] is None
+
+    resp = await client.post(f"/users/{unique_telegram_id}/gender", json={"gender": "female"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    after = await client.get(f"/users/{unique_telegram_id}/status")
+    assert after.json()["gender"] == "female"
+
+
 async def test_reminders_opt_out_endpoint(client, db_session, unique_telegram_id):
     from src.db.repositories import UserRepository
 

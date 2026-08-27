@@ -17,6 +17,8 @@ from src.api.schemas import (
     RespondRequest,
     RespondResponse,
     RollResponse,
+    SetGenderAck,
+    SetGenderRequest,
     SetIntentionRequest,
     SetIntentionResponse,
     SkipAck,
@@ -195,6 +197,15 @@ async def user_status(telegram_id: int, db: AsyncSession = Depends(get_db)) -> U
     service = GameService(db)
     status = await service.get_user_status(telegram_id)
     return UserStatusResponse(**status)
+
+
+@router.post("/users/{telegram_id}/gender", response_model=SetGenderAck)
+async def set_gender(
+    telegram_id: int, body: SetGenderRequest, db: AsyncSession = Depends(get_db)
+) -> SetGenderAck:
+    service = GameService(db)
+    await service.set_gender(telegram_id, body.gender)
+    return SetGenderAck()
 
 
 @router.post("/users/{telegram_id}/reminders/opt-out", response_model=ReminderAck)

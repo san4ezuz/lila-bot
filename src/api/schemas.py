@@ -105,6 +105,15 @@ class UserStatusResponse(BaseModel):
     has_free_game_used: bool
     paid_games_available: int
     active_game_id: uuid.UUID | None
+    gender: str | None = None
+
+
+class SetGenderRequest(BaseModel):
+    gender: str
+
+
+class SetGenderAck(BaseModel):
+    ok: bool = True
 
 
 class WebhookAck(BaseModel):

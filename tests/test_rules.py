@@ -147,7 +147,16 @@ def test_turn_limit_forces_a_soft_finish():
     assert new_state.turn == 2
     assert new_state.finished is True
     assert new_state.finish_reason == "turn_limit"
-    assert result.event == "turn_limit_reached"
+
+
+def test_no_turn_limit_by_default_even_at_a_high_turn_count():
+    # docs/RULES.md §5 — the cap was removed as a product default; apply_roll() must not force
+    # a finish just because a lot of turns have passed when turn_limit isn't explicitly set.
+    state = GameState(position=6, in_play=True, turn=500)
+    new_state, result = apply_roll(state, 3, BOARD)
+
+    assert result.event == "moved"
+    assert new_state.finished is False
 
 
 def test_cannot_roll_on_an_already_finished_game():

@@ -175,3 +175,52 @@ def test_build_deepen_context_includes_player_answer():
 def test_build_summary_context_joins_path():
     context = build_summary_context("тест", ["6 Заблуждение", "9 Чувственный план"])
     assert "6 Заблуждение → 9 Чувственный план" in context
+
+
+def test_build_interpret_cell_context_names_the_skipped_transition_source():
+    context = build_interpret_cell_context(
+        intention="тест",
+        cell_id=8,
+        cell_name="Алчность",
+        theme="тема",
+        facets=["грань"],
+        questions=["вопрос?"],
+        event="moved",
+        transition="snake",
+        visited=[],
+        recent_player_answers=[],
+        skipped_cell_id=12,
+        skipped_cell_name="Зависть",
+        skipped_cell_theme="тема пропущенной",
+    )
+    assert "12" in context
+    assert "Зависть" in context
+
+
+def test_build_interpret_cell_context_gender_instruction():
+    male_context = build_interpret_cell_context(
+        intention=None, cell_id=1, cell_name="x", theme="t", facets=[], questions=["q"],
+        event="moved", transition=None, visited=[], recent_player_answers=[], gender="male",
+    )
+    female_context = build_interpret_cell_context(
+        intention=None, cell_id=1, cell_name="x", theme="t", facets=[], questions=["q"],
+        event="moved", transition=None, visited=[], recent_player_answers=[], gender="female",
+    )
+    assert "мужском роде" in male_context
+    assert "женском роде" in female_context
+
+
+def test_first_try_entry_message_congratulates_without_deep_analysis():
+    message = guide_module.first_try_entry_message("разобраться с работой")
+    assert "Заблуждение" in message
+    assert "разобраться с работой" in message
+    assert "поздравляю" in message.lower()
+
+
+def test_six_extra_roll_note_mentions_the_bonus_roll():
+    assert "ещё один бросок" in guide_module.six_extra_roll_note()
+
+
+def test_intention_ack_message_uses_gendered_verb():
+    assert "пришла" in guide_module.intention_ack_message("тест", gender="female")
+    assert "пришёл" in guide_module.intention_ack_message("тест", gender="male")

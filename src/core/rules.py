@@ -1,7 +1,10 @@
 from src.core.board import BOARD_MAX_CELL, ENTRY_CELL, FINISH_CELL, Board
 from src.core.models import GameState, MoveEvent, MoveRecord, MoveResult
 
-DEFAULT_TURN_LIMIT = 60
+# None = no turn limit (product default — see docs/RULES.md §5: removed after feedback that
+# capping partial partии felt arbitrary). Still fully supported for anyone who wants a cap
+# (tests, a future operator setting) — pass an int explicitly.
+DEFAULT_TURN_LIMIT: int | None = None
 
 # Classic rule is "need a 6 to enter" — reinstated after players found the un-gated entry didn't
 # match the game's own framing (see docs/RULES.md §2). To avoid the tedium that got the gate
@@ -22,7 +25,7 @@ def apply_roll(
     state: GameState,
     roll: int,
     board: Board,
-    turn_limit: int = DEFAULT_TURN_LIMIT,
+    turn_limit: int | None = DEFAULT_TURN_LIMIT,
 ) -> tuple[GameState, MoveResult]:
     """Apply a single dice roll to a game state. Pure function: same inputs -> same outputs.
 
@@ -183,9 +186,9 @@ def apply_roll(
 
 
 def _apply_turn_limit(
-    state: GameState, result: MoveResult, turn_limit: int
+    state: GameState, result: MoveResult, turn_limit: int | None
 ) -> tuple[GameState, MoveResult]:
-    if state.finished or state.turn < turn_limit:
+    if turn_limit is None or state.finished or state.turn < turn_limit:
         return state, result
 
     limited_state = GameState(

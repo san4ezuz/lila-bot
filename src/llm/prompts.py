@@ -40,6 +40,14 @@ GUIDE_SYSTEM_PROMPT = """\
 действий; не используй заголовки и списки."""
 
 
+def _gender_instruction(gender: str | None) -> str:
+    if gender == "male":
+        return "Обращайся к игроку в мужском роде (он, пришёл, готов, вошёл)."
+    if gender == "female":
+        return "Обращайся к игроку в женском роде (она, пришла, готова, вошла)."
+    return ""
+
+
 def build_interpret_cell_context(
     intention: str | None,
     cell_id: int,
@@ -51,10 +59,17 @@ def build_interpret_cell_context(
     transition: str | None,
     visited: list[str],
     recent_player_answers: list[str],
+    skipped_cell_id: int | None = None,
+    skipped_cell_name: str | None = None,
+    skipped_cell_theme: str | None = None,
+    gender: str | None = None,
 ) -> str:
     lines = []
     if intention:
         lines.append(f"Запрос игрока на партию: «{intention}».")
+    gender_line = _gender_instruction(gender)
+    if gender_line:
+        lines.append(gender_line)
     if visited:
         lines.append("Пройденный путь (последние клетки): " + ", ".join(visited) + ".")
     if recent_player_answers:
@@ -72,6 +87,14 @@ def build_interpret_cell_context(
         f"Текущая клетка: №{cell_id} «{cell_name}». Тема: {theme}"
         f"{transition_note}{entry_note}{finish_note}"
     )
+    if skipped_cell_id is not None and skipped_cell_name is not None:
+        lines.append(
+            f"По пути сюда переход сработал с клетки №{skipped_cell_id} «{skipped_cell_name}» "
+            f"(тема: {skipped_cell_theme}) — игрок на ней не задержался, его сразу унесло дальше. "
+            "В одной короткой фразе назови эту пропущенную клетку и намекни, почему урок этой "
+            "клетки настиг игрока мгновенно, а не через проживание — не разбирай её подробно, "
+            "основной фокус остаётся на текущей клетке."
+        )
     lines.append("Грани трактовки клетки (используй как опору, не копируй дословно): " + " ".join(facets))
     lines.append("Возможные вопросы (переформулируй под игрока): " + " ".join(questions))
     lines.append("Дай интерпретацию этой клетки для игрока и заверши одним рефлексивным вопросом.")
@@ -79,11 +102,14 @@ def build_interpret_cell_context(
 
 
 def build_not_entered_context(
-    intention: str | None, roll: int, near_guarantee: bool
+    intention: str | None, roll: int, near_guarantee: bool, gender: str | None = None
 ) -> str:
     lines = []
     if intention:
         lines.append(f"Запрос игрока на партию: «{intention}».")
+    gender_line = _gender_instruction(gender)
+    if gender_line:
+        lines.append(gender_line)
     lines.append(
         f"Игрок ещё не вошёл в игру: по правилам «Лилы» нужна шестёрка, а выпало {roll}."
     )
@@ -103,10 +129,15 @@ def build_not_entered_context(
     return "\n".join(lines)
 
 
-def build_deepen_context(intention: str | None, cell_name: str, player_text: str) -> str:
+def build_deepen_context(
+    intention: str | None, cell_name: str, player_text: str, gender: str | None = None
+) -> str:
     lines = []
     if intention:
         lines.append(f"Запрос игрока на партию: «{intention}».")
+    gender_line = _gender_instruction(gender)
+    if gender_line:
+        lines.append(gender_line)
     lines.append(f"Текущая клетка: «{cell_name}».")
     lines.append(f"Ответ игрока на предыдущий вопрос: «{player_text}»")
     lines.append(
@@ -116,10 +147,13 @@ def build_deepen_context(intention: str | None, cell_name: str, player_text: str
     return "\n".join(lines)
 
 
-def build_summary_context(intention: str | None, visited: list[str]) -> str:
+def build_summary_context(intention: str | None, visited: list[str], gender: str | None = None) -> str:
     lines = []
     if intention:
         lines.append(f"Запрос игрока на партию: «{intention}».")
+    gender_line = _gender_instruction(gender)
+    if gender_line:
+        lines.append(gender_line)
     lines.append("Пройденный путь по клеткам от начала до конца: " + " → ".join(visited) + ".")
     lines.append(
         "Дай связное резюме всей партии: не перечисляй клетки построчно, а собери из пути "
