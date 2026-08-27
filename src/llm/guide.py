@@ -22,6 +22,7 @@ from src.llm.prompts import (
     GUIDE_SYSTEM_PROMPT,
     build_deepen_context,
     build_interpret_cell_context,
+    build_not_entered_context,
     build_summary_context,
 )
 
@@ -100,12 +101,15 @@ def intro_message() -> str:
 def intention_ack_message(intention: str) -> str:
     return (
         f"Понимаю. Ты пришёл с этим: «{intention}». Буду держать это в уме на протяжении всего "
-        "пути. Начинаем — твоя фишка уже на доске."
+        "пути. Чтобы войти в игру, по правилам «Лилы» нужно выбросить шестёрку — бросай кубик."
     )
 
 
-def not_entered_message(roll: int) -> str:
-    return f"Выпало {roll}. Чтобы войти в игру, нужна ровно шестёрка — попробуй ещё раз."
+def forced_entry_message() -> str:
+    return (
+        "Шестёрка так и не выпала — но иногда дверь открывается не по нашей готовности, а по "
+        "своему часу. Ты входишь в игру."
+    )
 
 
 def blocked_overshoot_message(cell: Cell) -> str:
@@ -135,6 +139,23 @@ def safety_referral_message() -> str:
 
 
 # --- LLM calls -------------------------------------------------------------------------------
+
+
+async def not_entered_message(
+    intention: str | None, roll: int, attempt: int, guarantee_after: int
+) -> str:
+    """`attempt` is how many entry rolls have been made so far (including this one); once it
+    reaches `guarantee_after`, apply_roll() lets the player in regardless of the roll — see
+    ENTRY_GUARANTEE_ATTEMPTS in src/core/rules.py. Rather than a mechanical "attempt N of M"
+    (found to feel like pressure), the LLM turns the not-yet-entered moment into a brief nudge
+    to reflect on the player's own intention — why the door isn't opening yet, what they're
+    waiting for. Attempt/guarantee numbers are only fed to the LLM as private context to shift
+    tone near the guarantee, never asked to be recited to the player."""
+    context = build_not_entered_context(
+        intention, roll, near_guarantee=attempt >= guarantee_after - 1
+    )
+    fallback = f"Выпало {roll} — не шестёрка. Бросай ещё раз, дорога откроется."
+    return await _call(context, max_tokens=150, effort="low", fallback=fallback)
 
 
 async def interpret_cell(

@@ -5,7 +5,10 @@ from src.bot import texts
 
 def start_game_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_START_GAME, callback_data="start_game")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text=texts.BTN_START_GAME, callback_data="start_game")],
+            [InlineKeyboardButton(text=texts.BTN_ABOUT, callback_data="about_game")],
+        ]
     )
 
 
@@ -24,4 +27,27 @@ def response_kb() -> InlineKeyboardMarkup:
 def paywall_kb(pay_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_PAY, url=pay_url)]]
+    )
+
+
+def confirm_new_game_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=texts.BTN_CONFIRM_NEW_GAME, callback_data="confirm_new_game")],
+            [InlineKeyboardButton(text=texts.BTN_CANCEL_NEW_GAME, callback_data="cancel_new_game")],
+        ]
+    )
+
+
+def reminder_kb(game_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=texts.BTN_CONTINUE_GAME, callback_data=f"continue_game:{game_id}")],
+            [
+                InlineKeyboardButton(
+                    text=texts.BTN_SNOOZE_REMINDER, callback_data=f"snooze_reminder:{game_id}"
+                ),
+                InlineKeyboardButton(text=texts.BTN_OPT_OUT_REMINDERS, callback_data="opt_out_reminders"),
+            ],
+        ]
     )

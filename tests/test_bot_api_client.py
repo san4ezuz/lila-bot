@@ -10,6 +10,7 @@ from src.api.deps import get_db
 from src.api.main import app
 from src.bot.api_client import ApiError, GameApiClient, PaymentRequiredError
 from src.config import get_settings
+from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS
 
 
 @pytest.fixture
@@ -34,10 +35,14 @@ async def api_client(db_session):
 async def test_start_and_roll_through_client(api_client, unique_telegram_id):
     start = await api_client.start_game(unique_telegram_id, intention="проверка клиента")
     assert start.status == "active"
-    assert start.in_play is True  # entry is automatic — see docs/RULES.md §2
+    assert start.in_play is False  # entry requires a 6 — see docs/RULES.md §2
 
-    roll = await api_client.roll(str(start.game_id))
-    assert roll.event in ("moved", "finished", "blocked_overshoot")
+    roll = None
+    for _ in range(ENTRY_GUARANTEE_ATTEMPTS):
+        roll = await api_client.roll(str(start.game_id))
+        if roll.event == "entered":
+            break
+    assert roll.event == "entered"
 
     state = await api_client.get_game(str(start.game_id))
     assert state.in_play is True

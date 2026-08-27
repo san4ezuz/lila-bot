@@ -4,6 +4,7 @@ import pytest_asyncio
 from src.api.deps import get_db
 from src.api.main import app
 from src.config import get_settings
+from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS
 
 
 @pytest_asyncio.fixture
@@ -52,9 +53,19 @@ async def test_full_game_playthrough_via_api(client, unique_telegram_id):
     assert start.status_code == 200
     body = start.json()
     assert body["status"] == "active"
-    assert body["in_play"] is True  # entry is automatic — see docs/RULES.md §2
-    assert body["position"] == 6
+    assert body["in_play"] is False  # entry requires a 6 — see docs/RULES.md §2
+    assert body["position"] is None
     game_id = body["game_id"]
+
+    # Entry is guaranteed within ENTRY_GUARANTEE_ATTEMPTS rolls regardless of what's rolled.
+    r = None
+    for _ in range(ENTRY_GUARANTEE_ATTEMPTS):
+        r = await client.post(f"/game/{game_id}/roll")
+        assert r.status_code == 200
+        if r.json()["event"] == "entered":
+            break
+    assert r.json()["event"] == "entered"
+    assert r.json()["position"] == 6
 
     r = await client.post(f"/game/{game_id}/roll")
     assert r.status_code == 200
@@ -207,6 +218,59 @@ async def test_feedback_is_accepted_on_a_finished_game(client, db_session, uniqu
     )
     event = result.scalar_one()
     assert event.props == {"text": "здорово"}
+
+
+async def test_reminders_opt_out_endpoint(client, db_session, unique_telegram_id):
+    from src.db.repositories import UserRepository
+
+    resp = await client.post(f"/users/{unique_telegram_id}/reminders/opt-out")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    users = UserRepository(db_session)
+    user = await users.get_or_create(unique_telegram_id)
+    assert user.reminders_opt_out is True
+
+
+async def test_reminder_snooze_endpoint(client, db_session, unique_telegram_id):
+    from src.db.repositories import ReminderRepository
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+
+    resp = await client.post(f"/game/{game_id}/reminders/snooze", json={"hours": 48})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    reminders = ReminderRepository(db_session)
+    import uuid
+
+    reminder = await reminders.get_or_create(uuid.UUID(game_id))
+    assert reminder.snoozed_until is not None
+
+
+async def test_resuming_an_abandoned_game_flips_it_back_to_active(client, db_session, unique_telegram_id):
+    from src.db.repositories import GameRepository
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+
+    games = GameRepository(db_session)
+    import uuid
+
+    game = await games.get(uuid.UUID(game_id))
+    await games.mark_abandoned(game)
+    assert game.status == "abandoned"
+
+    roll = await client.post(f"/game/{game_id}/roll")
+    assert roll.status_code == 200
+
+    state = await client.get(f"/game/{game_id}")
+    assert state.json()["status"] == "active"
 
 
 async def test_safety_flag_is_surfaced_on_crisis_marker(client, unique_telegram_id):

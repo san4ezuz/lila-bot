@@ -78,6 +78,31 @@ def build_interpret_cell_context(
     return "\n".join(lines)
 
 
+def build_not_entered_context(
+    intention: str | None, roll: int, near_guarantee: bool
+) -> str:
+    lines = []
+    if intention:
+        lines.append(f"Запрос игрока на партию: «{intention}».")
+    lines.append(
+        f"Игрок ещё не вошёл в игру: по правилам «Лилы» нужна шестёрка, а выпало {roll}."
+    )
+    if near_guarantee:
+        lines.append(
+            "Это одна из последних попыток перед тем, как правила игры сами откроют вход "
+            "независимо от броска — можешь мягко намекнуть, что дорога вот-вот откроется, но "
+            "без чисел и подсчёта попыток."
+        )
+    lines.append(
+        "Не констатируй правило сухо и не считай попытки вслух. Вместо этого в 1-2 фразах "
+        "мягко предложи задержаться на этом моменте: то, что дверь пока не открывается, можно "
+        "связать с его собственным запросом — что мешает начать, чего он на самом деле ждёт, "
+        "готов ли он сейчас. Не дави, не читай нотации, не констатируй очевидное. Заверши "
+        "тёплым приглашением бросить кубик ещё раз."
+    )
+    return "\n".join(lines)
+
+
 def build_deepen_context(intention: str | None, cell_name: str, player_text: str) -> str:
     lines = []
     if intention:

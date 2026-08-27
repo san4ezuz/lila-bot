@@ -7,13 +7,9 @@ Prints aggregate stats: average game length, share finishing by exact landing on
 hitting the turn limit. This is the product check from docs/PLAN.md §5.4 — run it before
 wiring up LLM/money, and rerun it whenever data/transitions.json or the turn limit changes.
 
-Games are seeded already-entered (position=ENTRY_CELL, in_play=True) to match
-GameService.set_intention() — after playtesting, the "roll a 6 to enter" gate was removed
-from the real product flow because it could take many rolls before the game visibly started
-(see docs/RULES.md §2). The pure engine in src/core/rules.py still supports the entry-gate
-mechanic (create_initial_state() + apply_roll() on a not-yet-in-play state) and it's still
-tested — this script just no longer exercises that path, since it no longer reflects what a
-real game does.
+Games start not-yet-entered (create_initial_state()), matching GameService.set_intention() —
+the "roll a 6 to enter" gate is back in the real product flow (docs/RULES.md §2), with entry
+guaranteed by ENTRY_GUARANTEE_ATTEMPTS rolls so it can't drag on indefinitely.
 """
 
 import random
@@ -23,16 +19,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.core.board import ENTRY_CELL, get_default_board
+from src.core.board import get_default_board
 from src.core.dice import roll_dice
-from src.core.models import GameState
-from src.core.rules import DEFAULT_TURN_LIMIT, apply_roll
+from src.core.rules import DEFAULT_TURN_LIMIT, apply_roll, create_initial_state
 
 
 def play_one_game(rng: random.Random, turn_limit: int) -> tuple[int, str]:
     """Returns (turns_used, finish_reason)."""
     board = get_default_board()
-    state = GameState(position=ENTRY_CELL, in_play=True, turn=0)
+    state = create_initial_state()
 
     while not state.finished:
         roll = roll_dice(rng)

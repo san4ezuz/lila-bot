@@ -119,3 +119,11 @@ class GameApiClient:
             "POST", "/admin/grant", json={"telegram_id": telegram_id, "count": count}
         )
         return AdminGrantResponse.model_validate(response.json())
+
+    async def opt_out_reminders(self, telegram_id: int) -> None:
+        await self._request("POST", f"/users/{telegram_id}/reminders/opt-out")
+
+    async def snooze_reminder(self, game_id: str, hours: int = 72) -> None:
+        await self._request(
+            "POST", f"/game/{game_id}/reminders/snooze", json={"hours": hours}
+        )

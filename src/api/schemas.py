@@ -92,6 +92,7 @@ class GameStateResponse(BaseModel):
     finished: bool
     finish_reason: str | None
     summary: str | None
+    cell: CellOut | None
     history: list[MoveOut]
 
 
@@ -130,3 +131,11 @@ class AdminGrantRequest(BaseModel):
 class AdminGrantResponse(BaseModel):
     telegram_id: int
     paid_games_available: int
+
+
+class ReminderAck(BaseModel):
+    ok: bool = True
+
+
+class SnoozeReminderRequest(BaseModel):
+    hours: int = 72

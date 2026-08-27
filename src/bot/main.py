@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, MenuButtonCommands
 
 from src.bot.api_client import GameApiClient
 from src.bot.handlers import admin, game, start
@@ -27,6 +28,19 @@ async def main() -> None:
 
     api_client = GameApiClient()
     dp["api"] = api_client
+
+    # Telegram's Bot API has no persistent menu button with custom text that fires an action
+    # directly (that requires a Mini App / WebApp button, out of scope for now — see
+    # docs/UX_ITERATION_1.md §5) — the closest real equivalent is a labeled entry in the
+    # command list, opened via the standard "Menu" button next to the input field.
+    await bot.set_my_commands(
+        [
+            BotCommand(command="start", description="🎲 Играть"),
+            BotCommand(command="newgame", description="🆕 Новая игра"),
+            BotCommand(command="help", description="ℹ️ Что это за игра?"),
+        ]
+    )
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)

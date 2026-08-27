@@ -1,11 +1,11 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.models import GameState, MoveResult
-from src.db.models import Event, Game, Message, Move, Payment, User
+from src.db.models import Event, Game, Message, Move, Payment, Reminder, User
 
 
 class UserRepository:
@@ -41,6 +41,10 @@ class UserRepository:
         user.paid_games_available -= 1
         await self._session.flush()
 
+    async def set_reminders_opt_out(self, user: User, opted_out: bool = True) -> None:
+        user.reminders_opt_out = opted_out
+        await self._session.flush()
+
 
 class GameRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -50,10 +54,13 @@ class GameRepository:
         return await self._session.get(Game, game_id)
 
     async def get_active_for_user(self, user_id: int) -> Game | None:
-        """A game the user can still resume: intention not set yet ('setup') or in progress
-        ('active'). Excludes 'finished'/'abandoned' — those don't block starting a new game."""
+        """A game the user can still resume: intention not set yet ('setup'), in progress
+        ('active'), or auto-marked stale by scripts/abandon_stale_games.py ('abandoned' — see
+        GameService._RESUMABLE_STATUSES; a background cron flipping the status must not force
+        the player to start a fresh paid/free game just because they came back after 48h).
+        Excludes 'finished' — that's the only truly terminal status."""
         result = await self._session.execute(
-            select(Game).where(Game.user_id == user_id, Game.status.in_(("setup", "active")))
+            select(Game).where(Game.user_id == user_id, Game.status.in_(("setup", "active", "abandoned")))
         )
         return result.scalar_one_or_none()
 
@@ -96,8 +103,21 @@ class GameRepository:
         return list(result.scalars().all())
 
     async def mark_abandoned(self, game: Game) -> None:
+        """Marking a game abandoned is bookkeeping, not player activity — it must NOT reset
+        `updated_at` (used both as the abandon-cutoff itself and as the reminder cascade's
+        threshold anchor, see src/services/reminder_service.py). A plain `flush()` here would
+        trigger the column's `onupdate=func.now()` and erase the real last-activity time right
+        as the game becomes stale, silently pushing every later reminder threshold out by
+        however long the game had already been sitting idle. Freeze the value across the flush
+        with an explicit follow-up UPDATE — `onupdate` only fires for columns not present in the
+        given SET values, so re-stating the frozen value suppresses it."""
+        frozen_updated_at = game.updated_at
         game.status = "abandoned"
         await self._session.flush()
+        await self._session.execute(
+            update(Game).where(Game.id == game.id).values(updated_at=frozen_updated_at)
+        )
+        await self._session.refresh(game)
 
 
 class MoveRepository:
@@ -189,6 +209,28 @@ class PaymentRepository:
         self._session.add(payment)
         await self._session.flush()
         return payment
+
+
+class ReminderRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_or_create(self, game_id: uuid.UUID) -> Reminder:
+        reminder = await self._session.get(Reminder, game_id)
+        if reminder is not None:
+            return reminder
+        reminder = Reminder(game_id=game_id)
+        self._session.add(reminder)
+        await self._session.flush()
+        return reminder
+
+    async def set_stage(self, reminder: Reminder, stage: int) -> None:
+        reminder.stage = stage
+        await self._session.flush()
+
+    async def set_snoozed_until(self, reminder: Reminder, until: datetime) -> None:
+        reminder.snoozed_until = until
+        await self._session.flush()
 
 
 class EventRepository:

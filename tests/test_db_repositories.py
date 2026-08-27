@@ -143,6 +143,10 @@ async def test_find_stale_active_filters_by_last_activity_not_creation(db_sessio
     stale = await games.find_stale_active(future_cutoff)
     assert game in stale
 
+    updated_at_before_abandon = game.updated_at
     await games.mark_abandoned(game)
     assert game.status == "abandoned"
     assert game not in await games.find_stale_active(future_cutoff)  # no longer 'active'
+    # mark_abandoned must not reset updated_at — see its docstring for why (it would silently
+    # push out every reminder threshold computed from this same column).
+    assert game.updated_at == updated_at_before_abandon

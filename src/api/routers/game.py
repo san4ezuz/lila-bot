@@ -13,17 +13,20 @@ from src.api.schemas import (
     GameStateResponse,
     MoveOut,
     PaymentRequiredResponse,
+    ReminderAck,
     RespondRequest,
     RespondResponse,
     RollResponse,
     SetIntentionRequest,
     SetIntentionResponse,
     SkipAck,
+    SnoozeReminderRequest,
     StartGameRequest,
     StartGameResponse,
     UserStatusResponse,
 )
 from src.services.game_service import GameService, PaymentRequiredError
+from src.services.reminder_service import ReminderService
 
 router = APIRouter(dependencies=[Depends(require_internal_token)])
 
@@ -137,6 +140,11 @@ async def get_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Ga
     game = await service.get_game(game_id)
     moves = await service.moves.list_for_game(game.id)
 
+    cell = None
+    if game.position is not None:
+        board_cell = service.board.get_cell(game.position)
+        cell = CellOut(id=board_cell.id, name=board_cell.name, theme=board_cell.theme)
+
     return GameStateResponse(
         game_id=game.id,
         status=game.status,
@@ -148,6 +156,7 @@ async def get_game(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Ga
         finished=game.status == "finished",
         finish_reason=game.finish_reason,
         summary=game.summary,
+        cell=cell,
         history=[
             MoveOut(
                 turn=m.turn,
@@ -186,3 +195,19 @@ async def user_status(telegram_id: int, db: AsyncSession = Depends(get_db)) -> U
     service = GameService(db)
     status = await service.get_user_status(telegram_id)
     return UserStatusResponse(**status)
+
+
+@router.post("/users/{telegram_id}/reminders/opt-out", response_model=ReminderAck)
+async def opt_out_reminders(telegram_id: int, db: AsyncSession = Depends(get_db)) -> ReminderAck:
+    service = ReminderService(db)
+    await service.opt_out(telegram_id)
+    return ReminderAck()
+
+
+@router.post("/game/{game_id}/reminders/snooze", response_model=ReminderAck)
+async def snooze_reminder(
+    game_id: uuid.UUID, body: SnoozeReminderRequest, db: AsyncSession = Depends(get_db)
+) -> ReminderAck:
+    service = ReminderService(db)
+    await service.snooze(game_id, body.hours)
+    return ReminderAck()

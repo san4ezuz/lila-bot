@@ -2,7 +2,7 @@ import pytest
 
 from src.core.board import get_default_board
 from src.core.models import GameState
-from src.core.rules import apply_roll, create_initial_state
+from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS, apply_roll, create_initial_state
 
 BOARD = get_default_board()
 
@@ -35,6 +35,22 @@ def test_roll_of_six_before_entry_enters_the_game():
     assert new_state.position == 6
     assert result.event == "entered"
     assert result.extra_roll is True
+
+
+def test_entry_is_guaranteed_after_repeated_non_six_rolls():
+    state = create_initial_state()
+    for _ in range(ENTRY_GUARANTEE_ATTEMPTS - 1):
+        state, result = apply_roll(state, 1, BOARD)
+        assert result.event == "not_entered"
+        assert state.in_play is False
+
+    state, result = apply_roll(state, 1, BOARD)
+
+    assert result.event == "entered"
+    assert result.roll == 1
+    assert state.in_play is True
+    assert state.position == 6
+    assert state.turn == ENTRY_GUARANTEE_ATTEMPTS
 
 
 def test_normal_move_without_transition():

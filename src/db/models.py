@@ -33,6 +33,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     has_free_game_used: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     paid_games_available: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reminders_opt_out: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class Game(Base):
@@ -112,6 +113,24 @@ class Payment(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Reminder(Base):
+    """Tracks the abandoned-game reminder cascade (docs/UX_ITERATION_1.md §2) — deliberately its
+    own table, not columns on `games`: `games.updated_at` has `onupdate=func.now()` and is used
+    both by this feature's own thresholds AND by `abandon_stale_games` (48h). Writing reminder
+    bookkeeping into the same `games` row would bump `updated_at` on every reminder sent, making
+    the game look freshly active and breaking both features' thresholds."""
+
+    __tablename__ = "reminders"
+
+    game_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("games.id"), primary_key=True)
+    stage: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Event(Base):

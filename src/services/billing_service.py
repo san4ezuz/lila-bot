@@ -32,12 +32,11 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import get_settings
 from src.db.models import Payment, User
 from src.db.repositories import EventRepository, PaymentRepository, UserRepository
+from src.services import notify
 
 logger = logging.getLogger(__name__)
 
@@ -181,20 +180,6 @@ class BillingService:
 
 PAYMENT_CONFIRMED_TEXT = "Оплата прошла — можно начинать следующую партию. Жми /start, когда будешь готов."
 
-
-async def notify_user(telegram_id: int, text: str) -> None:
-    """Best-effort notification via the raw Telegram Bot API — the billing flow lives in the
-    API process, not the bot process, so this avoids pulling in a full aiogram Dispatcher just
-    to send one message. Failure here must never fail the webhook response (Tribute would
-    retry-storm us for something that isn't actually our processing failing)."""
-    settings = get_settings()
-    if not settings.bot_token:
-        logger.warning("BOT_TOKEN not set — skipping Telegram notification to %s", telegram_id)
-        return
-    url = f"https://api.telegram.org/bot{settings.bot_token}/sendMessage"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, json={"chat_id": telegram_id, "text": text})
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        logger.warning("failed to notify user %s after payment: %s", telegram_id, exc)
+# Re-exported for callers/tests already importing notify_user from this module — the actual raw
+# Bot API call now lives in src/services/notify.py, shared with reminder_service.py.
+notify_user = notify.send_message

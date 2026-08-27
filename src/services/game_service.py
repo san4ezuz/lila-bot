@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.core.board import ENTRY_CELL, Board, get_default_board
 from src.core.models import GameState, MoveResult
-from src.core.rules import apply_roll
+from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS, apply_roll
 from src.db.models import Game, User
 from src.db.repositories import (
     EventRepository,
@@ -25,6 +25,12 @@ class GameNotFoundError(Exception):
 
 class GameNotActiveError(Exception):
     pass
+
+
+# A game auto-marked 'abandoned' by scripts/abandon_stale_games.py (48h inactivity) is not dead —
+# reminders keep nudging the player up to 7 days (docs/UX_ITERATION_1.md §2), and a returning
+# player must be able to pick it back up. "Resumable" = the player can still act on it.
+_RESUMABLE_STATUSES = ("active", "abandoned")
 
 
 class PaymentRequiredError(Exception):
@@ -97,23 +103,9 @@ class GameService:
         await self.games.set_intention(game, intention)
         await self.events.log("intention_set", game.user_id, game.id)
 
-        # Entry no longer requires rolling a 6 — decided after playtesting found the entry gate
-        # tedious (could take many rolls before the game visibly "starts"). The player is placed
-        # on the entry cell immediately; docs/RULES.md §2 updated accordingly. turn stays 0 since
-        # no die was actually rolled — the player's first real roll is turn 1, same as before.
-        entered_state = GameState(position=ENTRY_CELL, in_play=True, turn=0)
-        await self.games.apply_state(game, entered_state)
-
-        cell = self.board.get_cell(ENTRY_CELL)
-        cell_message = await guide.interpret_cell(
-            intention=intention,
-            cell=cell,
-            event="entered",
-            transition=None,
-            visited=[],
-            recent_player_answers=[],
-        )
-        guide_message = f"{guide.intention_ack_message(intention)}\n\n{cell_message}"
+        # Entry requires rolling a 6 (docs/RULES.md §2) — the player's next roll is their first
+        # entry attempt, so nothing moves yet here.
+        guide_message = guide.intention_ack_message(intention)
         await self.messages.create(game.id, "guide", guide_message)
         return guide_message
 
@@ -121,8 +113,10 @@ class GameService:
         self, game: Game
     ) -> tuple[MoveResult, str, bool]:
         """Returns (result, guide_message, can_roll)."""
-        if game.status != "active":
+        if game.status not in _RESUMABLE_STATUSES:
             raise GameNotActiveError("game is not active")
+        if game.status == "abandoned":
+            game.status = "active"
 
         state = _game_state(game)
         roll_value = random.randint(1, 6)
@@ -147,12 +141,12 @@ class GameService:
         return result, guide_message, can_roll
 
     async def _roll_guide_message(self, game: Game, result: MoveResult) -> str:
-        if result.event == "not_entered":
-            return guide.not_entered_message(result.roll)
+        if result.event == "not_entered" or result.final_position is None:
+            return await guide.not_entered_message(
+                game.intention, result.roll, result.turn, ENTRY_GUARANTEE_ATTEMPTS
+            )
         if result.event == "turn_limit_reached":
             return guide.turn_limit_message()
-        if result.final_position is None:
-            return guide.not_entered_message(result.roll)
 
         cell = self.board.get_cell(result.final_position)
         if result.event == "blocked_overshoot":
@@ -161,7 +155,7 @@ class GameService:
         # entered / moved / finished all land on a new cell — worth an LLM interpretation.
         visited = await self._visited_names(game.id)
         recent_answers = await self._recent_player_answers(game.id)
-        return await guide.interpret_cell(
+        cell_message = await guide.interpret_cell(
             intention=game.intention,
             cell=cell,
             event=result.event,
@@ -169,6 +163,12 @@ class GameService:
             visited=visited,
             recent_player_answers=recent_answers,
         )
+
+        # Entry guaranteed by ENTRY_GUARANTEE_ATTEMPTS fires without an actual 6 — say so before
+        # handing off to the LLM's interpretation of the cell itself.
+        if result.event == "entered" and result.roll != ENTRY_CELL:
+            return f"{guide.forced_entry_message()}\n\n{cell_message}"
+        return cell_message
 
     async def _visited_names(self, game_id: uuid.UUID) -> list[str]:
         moves = await self.moves.list_for_game(game_id)
@@ -183,13 +183,19 @@ class GameService:
         return [m.content for m in messages if m.role == "player"][-2:]
 
     async def skip_response(self, game: Game) -> None:
-        if game.status != "active":
+        if game.status not in _RESUMABLE_STATUSES:
             raise GameNotActiveError("game is not active")
+        if game.status == "abandoned":
+            game.status = "active"
+            await self.session.flush()
         await self.events.log("response_skipped", game.user_id, game.id)
 
     async def respond(self, game: Game, text: str) -> tuple[str, str | None]:
-        if game.status != "active":
+        if game.status not in _RESUMABLE_STATUSES:
             raise GameNotActiveError("game is not active")
+        if game.status == "abandoned":
+            game.status = "active"
+            await self.session.flush()
 
         await self.messages.create(game.id, "player", text)
         safety_flag = safety.screen(text)
@@ -213,7 +219,7 @@ class GameService:
         return guide_message, safety_flag
 
     async def finish_game(self, game: Game) -> tuple[str, dict]:
-        if game.status not in ("active", "finished"):
+        if game.status not in (*_RESUMABLE_STATUSES, "finished"):
             raise GameNotActiveError("game cannot be finished from its current status")
 
         visited = await self._visited_names(game.id)

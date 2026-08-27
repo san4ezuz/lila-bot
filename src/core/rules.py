@@ -3,6 +3,12 @@ from src.core.models import GameState, MoveEvent, MoveRecord, MoveResult
 
 DEFAULT_TURN_LIMIT = 60
 
+# Classic rule is "need a 6 to enter" — reinstated after players found the un-gated entry didn't
+# match the game's own framing (see docs/RULES.md §2). To avoid the tedium that got the gate
+# removed in the first place (many rolls with no visible progress), entry is now guaranteed by
+# this attempt regardless of what's rolled — 6 tries to roll a natural six, the 7th always works.
+ENTRY_GUARANTEE_ATTEMPTS = 7
+
 
 def create_initial_state() -> GameState:
     return GameState()
@@ -31,7 +37,7 @@ def apply_roll(
     next_turn = state.turn + 1
 
     if not state.in_play:
-        if roll == ENTRY_CELL:
+        if roll == ENTRY_CELL or next_turn >= ENTRY_GUARANTEE_ATTEMPTS:
             new_state = GameState(
                 position=ENTRY_CELL,
                 in_play=True,
