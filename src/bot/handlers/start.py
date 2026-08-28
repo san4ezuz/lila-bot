@@ -11,6 +11,13 @@ from src.config import get_settings
 
 router = Router(name="start")
 
+# Process-local, best-effort guard against a fast double-tap on "Начать партию" / gender choice /
+# "Да, начать заново" while the previous tap's API call (start_game, finish_game) is still in
+# flight — without it, each extra tap re-runs _begin_game() and, once free/paid games are used
+# up, sends its own separate paywall message with its own payment link. Not persisted — same
+# trade-off as game.py's _roll_idempotency_cache, acceptable for MVP (docs/PLAN.md §7.2).
+_busy_telegram_ids: set[int] = set()
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
@@ -66,17 +73,24 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
     if msg is None:
         return
 
-    # Ask once per user, right at the moment they actually mean to play, rather than on every
-    # /start — gender isn't needed until there's text to address them with.
-    try:
-        status = await api.get_user_status(callback.from_user.id)
-    except ApiError:
-        status = None
-    if status is not None and status.gender is None:
-        await msg.answer(texts.ASK_GENDER_TEXT, reply_markup=keyboards.gender_kb())
+    telegram_id = callback.from_user.id
+    if telegram_id in _busy_telegram_ids:
         return
+    _busy_telegram_ids.add(telegram_id)
+    try:
+        # Ask once per user, right at the moment they actually mean to play, rather than on every
+        # /start — gender isn't needed until there's text to address them with.
+        try:
+            status = await api.get_user_status(telegram_id)
+        except ApiError:
+            status = None
+        if status is not None and status.gender is None:
+            await msg.answer(texts.ASK_GENDER_TEXT, reply_markup=keyboards.gender_kb())
+            return
 
-    await _begin_game(msg, state, api, callback.from_user)
+        await _begin_game(msg, state, api, callback.from_user)
+    finally:
+        _busy_telegram_ids.discard(telegram_id)
 
 
 @router.callback_query(F.data.startswith("set_gender:"))
@@ -86,12 +100,19 @@ async def on_set_gender(callback: CallbackQuery, state: FSMContext, api: GameApi
     if msg is None:
         return
 
-    gender = (callback.data or "").split(":", 1)[1]
+    telegram_id = callback.from_user.id
+    if telegram_id in _busy_telegram_ids:
+        return
+    _busy_telegram_ids.add(telegram_id)
     try:
-        await api.set_gender(callback.from_user.id, gender)
-    except ApiError:
-        pass  # not worth blocking the player over this not saving — worst case, asked again
-    await _begin_game(msg, state, api, callback.from_user)
+        gender = (callback.data or "").split(":", 1)[1]
+        try:
+            await api.set_gender(telegram_id, gender)
+        except ApiError:
+            pass  # not worth blocking the player over this not saving — worst case, asked again
+        await _begin_game(msg, state, api, callback.from_user)
+    finally:
+        _busy_telegram_ids.discard(telegram_id)
 
 
 @router.message(GameStates.waiting_intention)
@@ -123,16 +144,23 @@ async def on_confirm_new_game(callback: CallbackQuery, state: FSMContext, api: G
     if msg is None:
         return
 
-    data = await state.get_data()
-    game_id = data.get("game_id")
-    if game_id is not None:
-        try:
-            await api.finish_game(game_id)
-        except ApiError:
-            pass  # already finished/invalid — fine, we're about to replace it anyway
+    telegram_id = callback.from_user.id
+    if telegram_id in _busy_telegram_ids:
+        return
+    _busy_telegram_ids.add(telegram_id)
+    try:
+        data = await state.get_data()
+        game_id = data.get("game_id")
+        if game_id is not None:
+            try:
+                await api.finish_game(game_id)
+            except ApiError:
+                pass  # already finished/invalid — fine, we're about to replace it anyway
 
-    await state.clear()
-    await _begin_game(msg, state, api, callback.from_user)
+        await state.clear()
+        await _begin_game(msg, state, api, callback.from_user)
+    finally:
+        _busy_telegram_ids.discard(telegram_id)
 
 
 @router.callback_query(F.data == "cancel_new_game")
