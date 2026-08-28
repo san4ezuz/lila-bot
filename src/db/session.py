@@ -14,7 +14,14 @@ from src.config import get_settings
 @lru_cache
 def get_engine() -> AsyncEngine:
     settings = get_settings()
-    return create_async_engine(settings.database_url, pool_pre_ping=True)
+    # Explicit connect/command timeouts so a DB/network problem surfaces as a fast, clear error
+    # instead of a request hanging until the caller's own timeout (or Railway's edge 502) —
+    # see alembic/env.py for the matching fix on the migration-time connection.
+    return create_async_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        connect_args={"timeout": 10, "command_timeout": 20},
+    )
 
 
 @lru_cache

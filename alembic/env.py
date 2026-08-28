@@ -71,10 +71,14 @@ async def run_async_migrations() -> None:
 
     """
 
+    # Explicit connect/command timeouts so a network or lock problem fails fast with a clear
+    # traceback in the deploy logs instead of hanging silently for the whole healthcheck window
+    # (this is exactly what happened on a Railway deploy — see git history for the incident).
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"timeout": 10, "command_timeout": 20},
     )
 
     async with connectable.connect() as connection:
