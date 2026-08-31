@@ -8,12 +8,13 @@ hitting the turn limit. This is the product check from docs/PLAN.md §5.4 — ru
 wiring up LLM/money, and rerun it whenever data/transitions.json or the turn limit changes.
 
 Games start not-yet-entered (create_initial_state()), matching GameService.set_intention() —
-the "roll a 6 to enter" gate is back in the real product flow (docs/RULES.md §2), with entry
-guaranteed by ENTRY_GUARANTEE_ATTEMPTS rolls so it can't drag on indefinitely.
+the "roll a 6 to enter" gate is back in the real product flow (docs/RULES.md §2). Entry uses
+the same weighted die as the real product (roll_entry_die — climbing odds of a natural six,
+guaranteed by ENTRY_GUARANTEE_ATTEMPTS).
 
-Product default has no turn limit (docs/RULES.md §5 — removed after feedback that capping
-partial partии felt arbitrary), so `turn_limit_reached` won't show up in a default run of this
-script; pass a second CLI arg to still exercise/measure that path if useful.
+Product default is a 60-turn cap (docs/RULES.md §5) paired with GameService's dice-assist from
+ASSIST_FROM_TURN: this simulation mirrors that assist too, so `turn_limit_reached` should be
+rare even at the default cap. Pass a second CLI arg to try a different cap.
 """
 
 import random
@@ -24,8 +25,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.core.board import get_default_board
-from src.core.dice import roll_dice
-from src.core.rules import DEFAULT_TURN_LIMIT, apply_roll, create_initial_state
+from src.core.dice import roll_entry_die
+from src.core.rules import (
+    ASSIST_FROM_TURN,
+    DEFAULT_TURN_LIMIT,
+    apply_roll,
+    create_initial_state,
+    shortest_path_rolls,
+)
 
 
 def play_one_game(rng: random.Random, turn_limit: int | None) -> tuple[int, str]:
@@ -34,7 +41,13 @@ def play_one_game(rng: random.Random, turn_limit: int | None) -> tuple[int, str]
     state = create_initial_state()
 
     while not state.finished:
-        roll = roll_dice(rng)
+        if not state.in_play:
+            roll = roll_entry_die(state.turn + 1, rng)
+        elif turn_limit is not None and state.turn >= ASSIST_FROM_TURN:
+            forced_path = shortest_path_rolls(state.position, board) if state.position else None
+            roll = forced_path[0] if forced_path else rng.randint(1, 6)
+        else:
+            roll = rng.randint(1, 6)
         state, result = apply_roll(state, roll, board, turn_limit=turn_limit)
 
     return state.turn, state.finish_reason or "unknown"

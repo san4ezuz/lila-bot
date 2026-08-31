@@ -22,9 +22,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     env: str = "local"
 
-    # None = no turn limit (product default, docs/RULES.md §5). Set TURN_LIMIT in .env for an
-    # operator-configured cap if ever needed again.
-    turn_limit: int | None = None
+    # 60-turn cap, paired with the dice-assist mechanic from turn 40 (docs/RULES.md §5). Override
+    # with TURN_LIMIT in .env; set to empty/None to disable the cap entirely (also turns off the
+    # assist, which only kicks in when a turn_limit is configured).
+    turn_limit: int | None = 60
     admin_telegram_ids_raw: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 
     @property

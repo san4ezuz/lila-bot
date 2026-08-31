@@ -1,16 +1,25 @@
+from collections import deque
+
 from src.core.board import BOARD_MAX_CELL, ENTRY_CELL, FINISH_CELL, Board
+from src.core.dice import ENTRY_GUARANTEE_ATTEMPTS
 from src.core.models import GameState, MoveEvent, MoveRecord, MoveResult
 
-# None = no turn limit (product default — see docs/RULES.md §5: removed after feedback that
-# capping partial partии felt arbitrary). Still fully supported for anyone who wants a cap
-# (tests, a future operator setting) — pass an int explicitly.
-DEFAULT_TURN_LIMIT: int | None = None
+# 60-turn cap (docs/RULES.md §5) — a game that hasn't reached cell 68 by then is force-finished.
+# Paired with ASSIST_FROM_TURN below, which steers the dice toward the finish well before the
+# cap would bite, so hitting turn_limit_reached should be rare in practice.
+DEFAULT_TURN_LIMIT: int | None = 60
+
+# From this turn onward, GameService stops rolling truly randomly and instead walks the player
+# along the shortest remaining path to the finish (see shortest_path_rolls() below) — see
+# docs/RULES.md §5. Leaves a 20-turn cushion before DEFAULT_TURN_LIMIT for the shortest path
+# (rarely more than a handful of rolls) plus any extra rolls from natural sixes along the way.
+ASSIST_FROM_TURN = 40
 
 # Classic rule is "need a 6 to enter" — reinstated after players found the un-gated entry didn't
-# match the game's own framing (see docs/RULES.md §2). To avoid the tedium that got the gate
-# removed in the first place (many rolls with no visible progress), entry is now guaranteed by
-# this attempt regardless of what's rolled — 6 tries to roll a natural six, the 7th always works.
-ENTRY_GUARANTEE_ATTEMPTS = 7
+# match the game's own framing (see docs/RULES.md §2). Entry is guaranteed by this attempt
+# regardless of what's rolled; the odds of a natural six also climb on each attempt before that
+# (see dice.roll_entry_die), so this fallback is defense-in-depth and rarely the thing that
+# actually fires.
 
 
 def create_initial_state() -> GameState:
@@ -211,3 +220,48 @@ def _apply_turn_limit(
         finished=True,
     )
     return limited_state, limited_result
+
+
+def shortest_path_rolls(position: int, board: Board) -> list[int] | None:
+    """Breadth-first search over the exact movement rules in apply_roll() (overshoot blocking,
+    arrow/snake transitions) for the shortest sequence of rolls that carries `position` to
+    FINISH_CELL. Used by GameService from ASSIST_FROM_TURN onward to steer a lagging player home
+    before DEFAULT_TURN_LIMIT hits — see docs/RULES.md §5.
+
+    Returns the roll sequence (each 1-6, first roll first), or None if `position` is already the
+    finish cell or (should never happen on the real board) no path exists.
+    """
+    if position == FINISH_CELL:
+        return None
+
+    prev: dict[int, tuple[int, int]] = {}  # reached position -> (from position, roll that got there)
+    visited = {position}
+    queue: deque[int] = deque([position])
+
+    while queue:
+        current = queue.popleft()
+        for roll in range(1, 7):
+            raw = current + roll
+            if raw > BOARD_MAX_CELL:
+                continue
+            if raw == FINISH_CELL:
+                target = FINISH_CELL
+            else:
+                transition = board.resolve_transition(raw)
+                target = transition[0] if transition is not None else raw
+
+            if target == FINISH_CELL:
+                path = [roll]
+                cursor = current
+                while cursor != position:
+                    cursor, prior_roll = prev[cursor]
+                    path.append(prior_roll)
+                path.reverse()
+                return path
+
+            if target not in visited:
+                visited.add(target)
+                prev[target] = (current, roll)
+                queue.append(target)
+
+    return None

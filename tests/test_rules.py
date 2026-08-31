@@ -2,7 +2,12 @@ import pytest
 
 from src.core.board import get_default_board
 from src.core.models import GameState
-from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS, apply_roll, create_initial_state
+from src.core.rules import (
+    ENTRY_GUARANTEE_ATTEMPTS,
+    apply_roll,
+    create_initial_state,
+    shortest_path_rolls,
+)
 
 BOARD = get_default_board()
 
@@ -149,11 +154,20 @@ def test_turn_limit_forces_a_soft_finish():
     assert new_state.finish_reason == "turn_limit"
 
 
-def test_no_turn_limit_by_default_even_at_a_high_turn_count():
-    # docs/RULES.md §5 — the cap was removed as a product default; apply_roll() must not force
-    # a finish just because a lot of turns have passed when turn_limit isn't explicitly set.
-    state = GameState(position=6, in_play=True, turn=500)
+def test_default_turn_limit_of_60_applies_when_not_overridden():
+    # docs/RULES.md §5 — the 60-turn cap is the product default; apply_roll() must enforce it
+    # even when the caller doesn't pass turn_limit explicitly.
+    state = GameState(position=6, in_play=True, turn=60)
     new_state, result = apply_roll(state, 3, BOARD)
+
+    assert result.event == "turn_limit_reached"
+    assert new_state.finished is True
+    assert new_state.finish_reason == "turn_limit"
+
+
+def test_turn_limit_can_still_be_disabled_explicitly():
+    state = GameState(position=6, in_play=True, turn=500)
+    new_state, result = apply_roll(state, 3, BOARD, turn_limit=None)
 
     assert result.event == "moved"
     assert new_state.finished is False
@@ -173,3 +187,30 @@ def test_history_accumulates_one_record_per_roll():
 
     assert len(state.history) == 3
     assert [m.turn for m in state.history] == [1, 2, 3]
+
+
+def test_shortest_path_rolls_returns_none_when_already_finished():
+    assert shortest_path_rolls(68, BOARD) is None
+
+
+def test_shortest_path_rolls_direct_hit():
+    # 65 + 3 = 68 exactly: a single roll finishes.
+    assert shortest_path_rolls(65, BOARD) == [3]
+
+
+def test_shortest_path_rolls_replaying_the_path_actually_finishes():
+    for start in (6, 9, 51, 62, 71):
+        path = shortest_path_rolls(start, BOARD)
+        assert path is not None
+
+        state = GameState(position=start, in_play=True, turn=0)
+        for roll in path:
+            state, result = apply_roll(state, roll, BOARD, turn_limit=None)
+        assert state.finished is True
+        assert state.finish_reason == "enlightenment"
+
+
+def test_shortest_path_rolls_prefers_an_arrow_shortcut():
+    # cell 54 ("План духовной преданности") is an arrow straight to the finish (68).
+    # From 51, rolling 3 reaches 54 and the arrow finishes in one roll.
+    assert shortest_path_rolls(51, BOARD) == [3]

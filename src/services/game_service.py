@@ -6,8 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.core.board import ENTRY_CELL, Board, get_default_board
+from src.core.dice import ENTRY_GUARANTEE_ATTEMPTS, roll_entry_die
 from src.core.models import GameState, MoveResult
-from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS, apply_roll
+from src.core.rules import ASSIST_FROM_TURN, apply_roll, shortest_path_rolls
 from src.db.models import Game, User
 from src.db.repositories import (
     EventRepository,
@@ -57,6 +58,7 @@ class GameService:
         self.events = EventRepository(session)
         self.board: Board = get_default_board()
         self.settings = get_settings()
+        self.rng = random.Random()
 
     async def start_game(
         self,
@@ -120,7 +122,7 @@ class GameService:
             game.status = "active"
 
         state = _game_state(game)
-        roll_value = random.randint(1, 6)
+        roll_value = self._pick_roll(game)
         new_state, result = apply_roll(state, roll_value, self.board, self.settings.turn_limit)
 
         await self.games.apply_state(game, new_state)
@@ -140,6 +142,26 @@ class GameService:
 
         can_roll = game.status == "active"
         return result, guide_message, can_roll
+
+    def _pick_roll(self, game: Game) -> int:
+        """Picks the die value for this roll. Before entry, uses the weighted entry die
+        (docs/RULES.md §2 — climbing odds of a natural six, guaranteed by attempt
+        ENTRY_GUARANTEE_ATTEMPTS). Once in play and past ASSIST_FROM_TURN, steers the roll along
+        the shortest remaining path to the finish instead of rolling truly at random, so the
+        player reliably reaches cell 68 before self.settings.turn_limit (docs/RULES.md §5)."""
+        if not game.in_play:
+            return roll_entry_die(game.turn + 1, self.rng)
+
+        if (
+            self.settings.turn_limit is not None
+            and game.turn >= ASSIST_FROM_TURN
+            and game.position is not None
+        ):
+            forced_path = shortest_path_rolls(game.position, self.board)
+            if forced_path:
+                return forced_path[0]
+
+        return self.rng.randint(1, 6)
 
     async def _roll_guide_message(self, game: Game, result: MoveResult) -> str:
         gender = await self._user_gender(game.user_id)
