@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import anthropic
+import pytest
 
 import src.llm.guide as guide_module
 from src.core.board import get_default_board
@@ -89,7 +90,9 @@ async def test_call_falls_back_on_timeout(monkeypatch):
 
 
 async def test_call_returns_extracted_text_on_success(monkeypatch):
-    response = SimpleNamespace(content=[SimpleNamespace(type="text", text="  a real reply  ")])
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="  a real reply  ")], stop_reason="end_turn"
+    )
     fake_client = SimpleNamespace(
         messages=SimpleNamespace(create=AsyncMock(return_value=response))
     )
@@ -98,6 +101,36 @@ async def test_call_returns_extracted_text_on_success(monkeypatch):
     result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="unused")
 
     assert result == "a real reply"
+
+
+async def test_call_falls_back_and_warns_when_thinking_used_up_max_tokens(monkeypatch, caplog):
+    """Real Haiku 5.5 behavior: thinking counts toward max_tokens, so a tight ceiling can stop the
+    response after a thinking block with no text at all."""
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="thinking", thinking="")], stop_reason="max_tokens"
+    )
+    fake_client = SimpleNamespace(
+        messages=SimpleNamespace(create=AsyncMock(return_value=response))
+    )
+    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+
+    result = await _real_call("ctx", max_tokens=100, effort="low", fallback="FALLBACK")
+
+    assert result == "FALLBACK"
+    assert "stopped early: max_tokens" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("model", "supported"),
+    [
+        ("claude-haiku-5-5", True),
+        ("claude-opus-5-5", True),
+        ("claude-haiku-4-5", False),
+        ("claude-haiku-4-5-20251001", False),
+    ],
+)
+def test_supports_effort(model, supported):
+    assert guide_module._supports_effort(model) is supported
 
 
 async def test_interpret_cell_uses_real_call_and_board_data(monkeypatch):
@@ -126,11 +159,11 @@ async def test_interpret_cell_uses_real_call_and_board_data(monkeypatch):
     assert result == "мокнутый ответ"
     assert cell.name in captured["context"]
     assert "разобраться с застоем" in captured["context"]
-    assert captured["effort"] == "medium"
-    assert captured["max_tokens"] == 400
+    assert captured["effort"] == "low"
+    assert captured["max_tokens"] == 2000
 
 
-async def test_summarize_game_uses_high_effort(monkeypatch):
+async def test_summarize_game_leaves_room_for_thinking(monkeypatch):
     captured = {}
 
     async def _capture(context, max_tokens, effort, fallback):
@@ -143,8 +176,8 @@ async def test_summarize_game_uses_high_effort(monkeypatch):
     result = await guide_module.summarize_game("тест", ["6 Заблуждение", "9 Чувственный план"])
 
     assert result == "резюме"
-    assert captured["effort"] == "high"
-    assert captured["max_tokens"] == 900
+    assert captured["effort"] == "low"
+    assert captured["max_tokens"] == 3000
 
 
 def test_build_interpret_cell_context_includes_facets_and_questions():

@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 _CALL_TIMEOUT_SECONDS = 40
 
+# Hard ceilings, not length targets: reply length is set by the word limits in the system prompt.
+# Thinking counts against max_tokens, so a ceiling near the expected reply can leave no text at all.
+_MAX_TOKENS_SHORT = 1000
+_MAX_TOKENS_REPLY = 2000
+_MAX_TOKENS_SUMMARY = 3000
+
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
@@ -47,10 +53,11 @@ def _gendered(male: str, female: str, neutral: str, gender: str | None) -> str:
 
 def _supports_effort(model: str) -> bool:
     """`output_config.effort` 400s on older/smaller models (confirmed for Haiku 4.5 — see
-    claude-api skill's thinking/effort reference table). Keep this an allowlist-by-exclusion of
+    claude-api skill's thinking/effort reference table). Haiku 5.5 does support it, and needs it:
+    its default effort spends the token budget on thinking. Keep this an allowlist-by-exclusion of
     known non-supporting families rather than a hardcoded model list, since docs/PLAN.md §5's
     LLM_MODEL is operator-configurable and may change during testing."""
-    return "haiku" not in model.lower()
+    return not any(family in model.lower() for family in ("haiku-3", "haiku-4"))
 
 
 async def _call(
@@ -91,6 +98,10 @@ async def _call(
         return fallback
 
     text = extract_text(message)
+    if message.stop_reason != "end_turn":
+        # Cut mid-sentence, or no text at all if thinking used up max_tokens. Silent otherwise —
+        # the player just sees a clipped reply or the fallback.
+        logger.warning("guide LLM call stopped early: %s, %d chars", message.stop_reason, len(text))
     return text or fallback
 
 
@@ -191,7 +202,7 @@ async def not_entered_message(
         intention, roll, near_guarantee=attempt >= guarantee_after - 1, gender=gender
     )
     fallback = f"Выпало {roll} — не шестёрка. Бросай ещё раз, дорога откроется."
-    return await _call(context, max_tokens=150, effort="low", fallback=fallback)
+    return await _call(context, max_tokens=_MAX_TOKENS_SHORT, effort="low", fallback=fallback)
 
 
 async def interpret_cell(
@@ -223,7 +234,7 @@ async def interpret_cell(
     fallback = (
         f"Фишка на клетке {cell.id}, «{cell.name}». {cell.theme} {cell.questions[0]}"
     )
-    return await _call(context, max_tokens=400, effort="medium", fallback=fallback)
+    return await _call(context, max_tokens=_MAX_TOKENS_REPLY, effort="low", fallback=fallback)
 
 
 async def deepen(
@@ -231,7 +242,7 @@ async def deepen(
 ) -> str:
     context = build_deepen_context(intention, cell.name, player_text, gender=gender)
     fallback = "Слышу тебя. Идём дальше — бросай кубик, когда будешь готов."
-    return await _call(context, max_tokens=350, effort="medium", fallback=fallback)
+    return await _call(context, max_tokens=_MAX_TOKENS_REPLY, effort="low", fallback=fallback)
 
 
 async def summarize_game(
@@ -243,4 +254,4 @@ async def summarize_game(
         f"Вот путь, который ты прошёл за эту партию: {path}. "
         "Что из пройденного отзывается в тебе сильнее всего прямо сейчас?"
     )
-    return await _call(context, max_tokens=900, effort="high", fallback=fallback)
+    return await _call(context, max_tokens=_MAX_TOKENS_SUMMARY, effort="low", fallback=fallback)

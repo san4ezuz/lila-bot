@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # When set, only purchases of this digital product grant a game. Unset accepts any product.
     tribute_product_id: int | None = None
     price_second_game_rub: int = 299
-    llm_model: str = "claude-opus-5"
+    llm_model: str = "claude-haiku-5-5"
     log_level: str = "INFO"
     env: str = "local"
     railway_environment_name: str = ""  # set by Railway on every deployed service
