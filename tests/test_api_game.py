@@ -1,5 +1,6 @@
 import httpx
 import pytest_asyncio
+from sqlalchemy import select
 
 from src.api.deps import get_db
 from src.api.main import app
@@ -108,6 +109,69 @@ async def test_roll_idempotency_key_prevents_double_roll(client, unique_telegram
 
     state = await client.get(f"/game/{game_id}")
     assert len(state.json()["history"]) == 1  # only one move was actually recorded
+
+
+async def test_roll_idempotency_survives_a_process_restart(client, db_session, unique_telegram_id):
+    """The dedup key lives in `moves`, so a retry reaching a restarted API process (the case a
+    timeout during a deploy produces) is still a replay."""
+    from src.db.models import Move
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+    await client.post(f"/game/{game_id}/roll", headers={"Idempotency-Key": "k1"})
+
+    move = await db_session.scalar(select(Move).where(Move.idempotency_key == "k1"))
+    assert str(move.game_id) == game_id
+
+
+async def test_roll_replay_regenerates_a_missing_guide_message(client, db_session, unique_telegram_id):
+    """The attempt died after committing the move but before the LLM replied — the retry must get
+    an answer rather than an empty message, without rolling again."""
+    from sqlalchemy import delete
+
+    from src.db.models import Message
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+    first = await client.post(f"/game/{game_id}/roll", headers={"Idempotency-Key": "k2"})
+    await db_session.execute(delete(Message).where(Message.move_id.is_not(None)))
+
+    retry = await client.post(f"/game/{game_id}/roll", headers={"Idempotency-Key": "k2"})
+
+    assert retry.json()["turn"] == first.json()["turn"]
+    assert retry.json()["guide_message"]
+    state = await client.get(f"/game/{game_id}")
+    assert len(state.json()["history"]) == 1
+
+
+async def test_finish_twice_reuses_the_summary_and_counts_one_finish(client, db_session, unique_telegram_id):
+    from src.db.models import Event
+
+    start = await client.post(
+        "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
+    )
+    game_id = start.json()["game_id"]
+
+    first = await client.post(f"/game/{game_id}/finish")
+    second = await client.post(f"/game/{game_id}/finish")
+
+    assert second.json()["summary"] == first.json()["summary"]
+    events = await db_session.execute(
+        select(Event).where(Event.name == "game_finished", Event.game_id == game_id)
+    )
+    assert len(events.scalars().all()) == 1
+
+
+async def test_user_status_exposes_game_status_for_state_recovery(client, unique_telegram_id):
+    await client.post("/game/start", json={"telegram_id": unique_telegram_id})
+
+    status = await client.get(f"/users/{unique_telegram_id}/status")
+
+    assert status.json()["active_game_status"] == "setup"
 
 
 async def test_paywall_blocks_second_paid_game(client, unique_telegram_id):

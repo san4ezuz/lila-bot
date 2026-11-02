@@ -1,15 +1,16 @@
 import random
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.core.board import ENTRY_CELL, Board, get_default_board
 from src.core.dice import ENTRY_GUARANTEE_ATTEMPTS, roll_entry_die
-from src.core.models import GameState, MoveResult
+from src.core.models import GameState, MoveEvent, MoveResult, TransitionType
 from src.core.rules import ASSIST_FROM_TURN, apply_roll, shortest_path_rolls
-from src.db.models import Game, User
+from src.db.models import Game, Move, User
 from src.db.repositories import (
     EventRepository,
     GameRepository,
@@ -113,9 +114,18 @@ class GameService:
         return guide_message
 
     async def roll(
-        self, game: Game
+        self, game: Game, idempotency_key: str | None = None
     ) -> tuple[MoveResult, str, bool]:
-        """Returns (result, guide_message, can_roll)."""
+        """Returns (result, guide_message, can_roll). The row lock serializes concurrent rolls on
+        one game; a repeat of `idempotency_key` replays the move it made instead of rolling again.
+        The move is committed before the LLM call, so a failure there can't lose it and no DB
+        connection or lock is held while waiting on the model."""
+        await self.session.refresh(game, with_for_update=True)
+        if idempotency_key is not None:
+            existing = await self.moves.get_by_idempotency_key(game.id, idempotency_key)
+            if existing is not None:
+                return await self._replay_roll(game, existing)
+
         if game.status not in _RESUMABLE_STATUSES:
             raise GameNotActiveError("game is not active")
         if game.status == "abandoned":
@@ -126,22 +136,49 @@ class GameService:
         new_state, result = apply_roll(state, roll_value, self.board, self.settings.turn_limit)
 
         await self.games.apply_state(game, new_state)
-        move = await self.moves.create(game.id, result)
-
-        guide_message = await self._roll_guide_message(game, result)
-        await self.messages.create(game.id, "guide", guide_message, move_id=move.id)
+        move = await self.moves.create(game.id, result, idempotency_key)
         await self.events.log(
             "move_made",
             game.user_id,
             game.id,
             {"turn": result.turn, "position": result.final_position, "transition": result.transition},
         )
-
         if game.status == "finished":
             await self._on_finished(game)
+        await self.session.commit()
+
+        guide_message = await self._roll_guide_message(game, result)
+        await self.messages.create(game.id, "guide", guide_message, move_id=move.id)
 
         can_roll = game.status == "active"
         return result, guide_message, can_roll
+
+    async def _replay_roll(self, game: Game, move: Move) -> tuple[MoveResult, str, bool]:
+        """Rebuilds the response for a roll that already happened. The guide message can be missing
+        if the first attempt died between committing the move and the LLM reply — regenerate it
+        then, so a retry still gets an answer."""
+        finished = move.event in ("finished", "turn_limit_reached")
+        extra_roll = move.event == "entered" or (
+            move.roll == 6 and move.event in ("moved", "blocked_overshoot")
+        )
+        result = MoveResult(
+            turn=move.turn,
+            roll=move.roll,
+            from_position=move.from_pos,
+            raw_position=move.raw_pos,
+            final_position=move.to_pos,
+            transition=cast(TransitionType | None, move.transition),
+            event=cast(MoveEvent, move.event),
+            extra_roll=extra_roll,
+            finished=finished,
+        )
+        message = await self.messages.get_for_move(move.id)
+        if message is not None:
+            guide_message = message.content
+        else:
+            guide_message = await self._roll_guide_message(game, result)
+            await self.messages.create(game.id, "guide", guide_message, move_id=move.id)
+        return result, guide_message, game.status == "active"
 
     def _pick_roll(self, game: Game) -> int:
         """Picks the die value for this roll. Before entry, uses the weighted entry die
@@ -167,6 +204,7 @@ class GameService:
         gender = await self._user_gender(game.user_id)
 
         if result.event == "not_entered" or result.final_position is None:
+            await self.session.commit()  # no idle-in-transaction connection during the LLM call
             return await guide.not_entered_message(
                 game.intention, result.roll, result.turn, ENTRY_GUARANTEE_ATTEMPTS, gender
             )
@@ -191,6 +229,7 @@ class GameService:
                 if result.transition is not None and result.raw_position is not None
                 else None
             )
+            await self.session.commit()
             cell_message = await guide.interpret_cell(
                 intention=game.intention,
                 cell=cell,
@@ -252,6 +291,7 @@ class GameService:
         elif game.position is not None:
             cell = self.board.get_cell(game.position)
             gender = await self._user_gender(game.user_id)
+            await self.session.commit()
             guide_message = await guide.deepen(game.intention, cell, text, gender)
         else:
             # Player replied before their first roll landed them on a cell — nothing to deepen
@@ -271,8 +311,14 @@ class GameService:
         if game.status not in (*_RESUMABLE_STATUSES, "finished"):
             raise GameNotActiveError("game cannot be finished from its current status")
 
+        # Repeat call (a retry, or /newgame right after the finish) — the player has this summary
+        # already; don't pay for a new one or count the finish twice.
+        if game.status == "finished" and game.summary:
+            return game.summary, {"turns": game.turn, "finish_reason": game.finish_reason}
+
         visited = await self._visited_names(game.id)
         gender = await self._user_gender(game.user_id)
+        await self.session.commit()
         summary = await guide.summarize_game(game.intention, visited, gender)
         await self.games.set_summary(game, summary)
 
@@ -328,6 +374,7 @@ class GameService:
                 "has_free_game_used": False,
                 "paid_games_available": 0,
                 "active_game_id": None,
+                "active_game_status": None,
                 "gender": None,
             }
         active = await self.games.get_active_for_user(user.id)
@@ -335,6 +382,7 @@ class GameService:
             "has_free_game_used": user.has_free_game_used,
             "paid_games_available": user.paid_games_available,
             "active_game_id": active.id if active else None,
+            "active_game_status": active.status if active else None,
             "gender": user.gender,
         }
 

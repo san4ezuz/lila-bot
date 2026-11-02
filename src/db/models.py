@@ -75,10 +75,22 @@ class Game(Base):
 
 class Move(Base):
     __tablename__ = "moves"
-    __table_args__ = (Index("ix_moves_game_turn", "game_id", "turn"),)
+    __table_args__ = (
+        Index("ix_moves_game_turn", "game_id", "turn"),
+        Index(
+            "uq_moves_game_idempotency_key",
+            "game_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     game_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+    # Client-supplied key of the roll that created this move — a repeat of the same key replays
+    # this move instead of rolling again (see GameService.roll). NULL for moves made without one.
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
     turn: Mapped[int] = mapped_column(Integer, nullable=False)
     roll: Mapped[int] = mapped_column(Integer, nullable=False)
     from_pos: Mapped[int | None] = mapped_column(Integer)
@@ -115,6 +127,24 @@ class Payment(Base):
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WebhookInbox(Base):
+    """Every signature-valid payment webhook, stored before it is interpreted. A payload we fail
+    to act on stays here with its reason, so a real payment can be found and granted later
+    instead of living only in a log line."""
+
+    __tablename__ = "webhook_inbox"
+    __table_args__ = (Index("ix_webhook_inbox_status_created", "status", "created_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    event_name: Mapped[str | None] = mapped_column(String(100))
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # 'received' | 'processed' | 'ignored' | 'duplicate' | 'failed'
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="received")
+    note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

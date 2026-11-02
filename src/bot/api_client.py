@@ -41,7 +41,7 @@ class GameApiClient:
         self._client = client or httpx.AsyncClient(
             base_url=settings.api_base_url,
             headers={"X-Internal-Token": settings.api_internal_token},
-            timeout=45.0,
+            timeout=55.0,  # above the API's own 40s LLM timeout plus its DB work
         )
 
     async def aclose(self) -> None:
@@ -49,7 +49,12 @@ class GameApiClient:
             await self._client.aclose()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        response = await self._client.request(method, path, **kwargs)
+        try:
+            response = await self._client.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            # Timeouts and connection failures (e.g. the API restarting during a deploy) surface
+            # as ApiError too, so handlers have a single failure path to keep the player unstuck.
+            raise ApiError(503, "api_unavailable", str(exc)) from exc
         if response.status_code == 402:
             body = response.json()
             raise PaymentRequiredError(price=body["price"], pay_url=body["pay_url"])

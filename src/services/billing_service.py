@@ -1,36 +1,25 @@
 """Tribute payment webhook handling + the manual /grant admin fallback (docs/PLAN.md §11).
 
-Confirmed against Tribute's own docs (wiki.tribute.tg, fetched 2026-08-26 — see
-docs/PLAN.md §11.2 for the standing note that provider details should be re-checked at
-implementation time):
-  - Signature header is `trbt-signature` (not a made-up `X-Tribute-Signature`).
-  - It's an HMAC-SHA256 of the raw request body, signed with your **Api-Key** — Tribute does
-    NOT use a separate webhook secret. `settings.tribute_api_key` is the same key used for the
-    `Api-Key` header on outbound requests to Tribute's API.
-  - Real event names exist for two product families: shop orders (`shopOrder`,
-    `shopOrderChargeSuccess`, `shopOrderPaymentReceived`, `shopOrderChargeFailed`,
-    `shopOrderCancelled`, `shopOrderRefunded`, `shopOrderPaymentFailed`) and content-creator
-    products (`newSubscription`, `renewedSubscription`, `newDonation`, `recurrentDonation`,
-    `newDigitalProduct`).
-  - Tribute's data model nests a `telegramId` field on a `User` object (confirmed from Tribute's
-    own Go SDK struct definitions, github.com/izeberg/go-tribute-payments-hook) — since Tribute
-    payments happen inside Telegram, this is how a webhook correlates to our own users, not a
-    custom metadata field we attach ourselves (no such field is exposed in their public product-
-    creation docs, which is not an API — products/prices are configured in Creator Dashboard).
+The contract below comes from Tribute's own OpenAPI spec (tribute.tg/api/v1/openapi/en, checked
+2026-11-02), for the "digital product" product type this bot sells:
+  - Signature header is `trbt-signature`: an HMAC-SHA256 of the raw request body, signed with your
+    **Api-Key** — there is no separate webhook secret. Hex encoding is assumed (the spec doesn't
+    state it); a real test payment is what confirms that.
+  - The body is `{"name", "created_at", "sent_at", "payload"}`. `name` is `new_digital_product` or
+    `digital_product_refunded`.
+  - `payload` carries `product_id`, `amount` and `currency`, `purchase_id` (the dedup key, also
+    links a refund to its purchase), and an optional `telegram_user_id`.
+  - `amount` is in the currency's smallest unit (kopecks for RUB).
 
-Still NOT confirmed (GitBook's OpenAPI payload examples aren't reachable as static content) and
-worth checking against a real test payment before launch: the exact byte encoding of the digest
-(hex assumed below — the most common convention), and the precise top-level JSON shape per event
-(whether `user`/`amount`/`currency`/`id` sit at the payload root or nested under a per-event key
-like `payload.subscription`/`payload.donation`). `parse_webhook_payload()` below tries several
-plausible shapes and logs + safely no-ops (ack without granting) rather than guessing wrong.
+Every event with a valid signature is stored in `webhook_inbox` before it is interpreted, so a
+payment we can't act on stays recoverable instead of existing only in a log line.
 """
 
 import hashlib
 import hmac
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,28 +29,8 @@ from src.services import notify
 
 logger = logging.getLogger(__name__)
 
-# Event names confirmed from wiki.tribute.tg (for-shops/api/webhooks and
-# for-content-creators/api-documentation/webhooks) — see module docstring.
-_SUCCESS_EVENTS = frozenset(
-    {
-        "shopOrderPaymentReceived",
-        "shopOrderChargeSuccess",
-        "newDigitalProduct",
-        "newSubscription",
-        "renewedSubscription",
-        "newDonation",
-        "recurrentDonation",
-    }
-)
-_IGNORABLE_EVENTS = frozenset(
-    {
-        "shopOrder",
-        "shopOrderChargeFailed",
-        "shopOrderCancelled",
-        "shopOrderRefunded",
-        "shopOrderPaymentFailed",
-    }
-)
+_PAYMENT_EVENT = "new_digital_product"
+_REFUND_EVENT = "digital_product_refunded"
 
 
 class InvalidWebhookSignatureError(Exception):
@@ -84,55 +53,55 @@ def verify_signature(raw_body: bytes, signature: str | None, secret: str) -> boo
     return hmac.compare_digest(expected, signature)
 
 
+class UnprocessableWebhookError(Exception):
+    """A payment event we recognize but can't apply (e.g. no Telegram id, unknown purchase). The
+    webhook is acked — Tribute's retries wouldn't change the payload — and the inbox row stays
+    `failed` with this message, for manual resolution through /grant."""
+
+
 @dataclass(frozen=True, slots=True)
-class ParsedTributePayment:
-    telegram_id: int
+class ParsedTributeEvent:
+    kind: Literal["payment", "refund"]
+    telegram_id: int | None
     external_id: str
     amount: float
     currency: str
 
 
-def parse_webhook_payload(payload: dict[str, Any]) -> ParsedTributePayment | None:
-    """Returns None for events we should acknowledge but not act on: a recognized non-success
-    event (refund/cancel/failure), or a shape we don't recognize at all — never guess and grant
-    on an event we can't positively identify as a successful payment."""
-    event = payload.get("event") or payload.get("name") or payload.get("type")
-
-    if event in _IGNORABLE_EVENTS:
-        logger.info("tribute webhook event %r — no action needed", event)
-        return None
-    if event is not None and event not in _SUCCESS_EVENTS:
-        logger.warning("unrecognized tribute webhook event %r — ignoring, not granting", event)
-        return None
-    if event is None:
-        logger.warning("tribute webhook payload has no recognizable event field: %r", payload)
+def parse_webhook_payload(
+    body: dict[str, Any], product_id: int | None = None
+) -> ParsedTributeEvent | None:
+    """Returns None for events that are simply not ours to act on: another event type, or another
+    product when `product_id` is set. Raises UnprocessableWebhookError when an event is ours but
+    can't be applied — never guess and grant on a payment we can't attribute."""
+    name = body.get("name")
+    if name not in (_PAYMENT_EVENT, _REFUND_EVENT):
+        logger.info("tribute webhook event %r — no action needed", name)
         return None
 
-    # Some event families nest the object under "payload"; try both root and nested.
-    nested = payload.get("payload")
-    body: dict[str, Any] = nested if isinstance(nested, dict) else payload
-    user: dict[str, Any] = body.get("user") or payload.get("user") or {}
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        raise UnprocessableWebhookError(f"{name}: no payload object")
 
-    telegram_id = (
-        user.get("telegramId")
-        or body.get("telegramId")
-        or payload.get("telegram_id")
-        or (payload.get("metadata") or {}).get("telegram_id")
-    )
-    if telegram_id is None:
-        logger.warning("tribute webhook (%s) has no telegram id we recognize: %r", event, payload)
+    if product_id is not None and payload.get("product_id") != product_id:
+        logger.info("tribute webhook for product %r — not ours", payload.get("product_id"))
         return None
 
-    external_id = body.get("id") or payload.get("id") or body.get("subscriptionId")
-    if external_id is None:
-        logger.warning("tribute webhook (%s) has no id field we recognize: %r", event, payload)
-        return None
+    purchase_id = payload.get("purchase_id")
+    if purchase_id is None:
+        raise UnprocessableWebhookError(f"{name}: no purchase_id")
 
-    amount = float(body.get("amount") or payload.get("amount") or 0)
-    currency = str(body.get("currency") or payload.get("currency") or "RUB")
+    kind: Literal["payment", "refund"] = "payment" if name == _PAYMENT_EVENT else "refund"
+    telegram_id = payload.get("telegram_user_id")
+    if kind == "payment" and telegram_id is None:
+        raise UnprocessableWebhookError(f"{name}: no telegram_user_id")
 
-    return ParsedTributePayment(
-        telegram_id=int(telegram_id), external_id=str(external_id), amount=amount, currency=currency
+    return ParsedTributeEvent(
+        kind=kind,
+        telegram_id=int(telegram_id) if telegram_id is not None else None,
+        external_id=str(purchase_id),
+        amount=int(payload.get("amount") or 0) / 100,
+        currency=str(payload.get("currency") or "rub").upper(),
     )
 
 
@@ -168,8 +137,24 @@ class BillingService:
         await self.events.log(
             "payment_succeeded", user.id, None, {"amount": amount, "currency": currency}
         )
-        await notify_user(telegram_id, PAYMENT_CONFIRMED_TEXT)
         return payment
+
+    async def process_tribute_refund(self, external_id: str) -> None:
+        """Marks the purchase refunded and takes back its game if it's still unused. A game
+        already started stays playable — the refund is recorded either way."""
+        payment = await self.payments.get_by_external_id("tribute", external_id)
+        if payment is None:
+            raise UnprocessableWebhookError(f"refund for unknown purchase {external_id}")
+        if payment.status == "refunded":
+            raise DuplicateWebhookError(payment)
+
+        payment.status = "refunded"
+        await self.session.flush()
+        user = await self.session.get(User, payment.user_id)
+        revoked = user is not None and await self.users.revoke_paid_game(user)
+        await self.events.log(
+            "payment_refunded", payment.user_id, None, {"external_id": external_id, "revoked": revoked}
+        )
 
     async def grant_manual(self, telegram_id: int, count: int = 1) -> User:
         user = await self.users.get_or_create(telegram_id)
@@ -183,3 +168,8 @@ PAYMENT_CONFIRMED_TEXT = "Оплата прошла — можно начина�
 # Re-exported for callers/tests already importing notify_user from this module — the actual raw
 # Bot API call now lives in src/services/notify.py, shared with reminder_service.py.
 notify_user = notify.send_message
+
+
+async def send_payment_confirmation(telegram_id: int) -> None:
+    """Call after commit — the player must not be told about a grant that could still roll back."""
+    await notify_user(telegram_id, PAYMENT_CONFIRMED_TEXT)

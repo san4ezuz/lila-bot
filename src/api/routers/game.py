@@ -32,12 +32,6 @@ from src.services.reminder_service import ReminderService
 
 router = APIRouter(dependencies=[Depends(require_internal_token)])
 
-# Process-local idempotency cache for POST /game/{id}/roll — see docs/PLAN.md §7.2.
-# Deliberately not persisted: a bot-process restart losing a few seconds of dedup window is an
-# acceptable MVP trade-off against a Redis/DB dependency for a purely defensive double-tap guard.
-_roll_idempotency_cache: dict[str, RollResponse] = {}
-
-
 @router.post(
     "/game/start",
     response_model=StartGameResponse,
@@ -83,20 +77,16 @@ async def roll(
     db: AsyncSession = Depends(get_db),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> RollResponse:
-    cache_key = f"{game_id}:{idempotency_key}" if idempotency_key else None
-    if cache_key and cache_key in _roll_idempotency_cache:
-        return _roll_idempotency_cache[cache_key]
-
     service = GameService(db)
     game = await service.get_game(game_id)
-    result, guide_message, can_roll = await service.roll(game)
+    result, guide_message, can_roll = await service.roll(game, idempotency_key)
 
     cell = None
     if result.final_position is not None:
         board_cell = service.board.get_cell(result.final_position)
         cell = CellOut(id=board_cell.id, name=board_cell.name, theme=board_cell.theme)
 
-    response = RollResponse(
+    return RollResponse(
         roll=result.roll,
         from_position=result.from_position,
         raw_position=result.raw_position,
@@ -110,9 +100,6 @@ async def roll(
         can_roll=can_roll,
         extra_roll=result.extra_roll,
     )
-    if cache_key:
-        _roll_idempotency_cache[cache_key] = response
-    return response
 
 
 @router.post("/game/{game_id}/skip", response_model=SkipAck)

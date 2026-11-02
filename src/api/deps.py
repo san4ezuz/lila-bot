@@ -1,3 +1,4 @@
+import hmac
 from collections.abc import AsyncGenerator
 
 from fastapi import Header, HTTPException
@@ -22,5 +23,5 @@ async def require_internal_token(x_internal_token: str = Header(...)) -> None:
     implemented in MVP, but this is where it plugs in without touching route handlers.
     """
     settings = get_settings()
-    if x_internal_token != settings.api_internal_token:
+    if not hmac.compare_digest(x_internal_token.encode(), settings.api_internal_token.encode()):
         raise HTTPException(status_code=401, detail="invalid internal token")

@@ -105,6 +105,7 @@ class UserStatusResponse(BaseModel):
     has_free_game_used: bool
     paid_games_available: int
     active_game_id: uuid.UUID | None
+    active_game_status: str | None = None
     gender: str | None = None
 
 

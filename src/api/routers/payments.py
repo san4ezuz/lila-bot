@@ -1,16 +1,23 @@
+import logging
+
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db, require_internal_token
 from src.api.schemas import AdminGrantRequest, AdminGrantResponse, WebhookAck
 from src.config import get_settings
+from src.db.repositories import WebhookInboxRepository
 from src.services.billing_service import (
     BillingService,
     DuplicateWebhookError,
     InvalidWebhookSignatureError,
+    UnprocessableWebhookError,
     parse_webhook_payload,
+    send_payment_confirmation,
     verify_signature,
 )
+
+logger = logging.getLogger(__name__)
 
 webhook_router = APIRouter()
 admin_router = APIRouter(dependencies=[Depends(require_internal_token)])
@@ -31,24 +38,41 @@ async def tribute_webhook(
         raise InvalidWebhookSignatureError
 
     payload = await request.json()
-    parsed = parse_webhook_payload(payload)
-    if parsed is None:
-        # Not a success event, or a shape we don't recognize — ack anyway so Tribute doesn't
-        # retry-storm us; parse_webhook_payload() already logged why.
-        return WebhookAck()
+    # Committed on its own, before anything can fail below — this row is what keeps a payment
+    # recoverable. A crash past this point returns 500 and Tribute redelivers.
+    inbox = WebhookInboxRepository(db)
+    entry = await inbox.record("tribute", payload.get("name"), payload)
+    await db.commit()
 
     service = BillingService(db)
+    confirm_to: int | None = None
     try:
-        await service.process_tribute_payment(
-            telegram_id=parsed.telegram_id,
-            external_id=parsed.external_id,
-            amount=parsed.amount,
-            currency=parsed.currency,
-            raw_payload=payload,
-        )
+        parsed = parse_webhook_payload(payload, settings.tribute_product_id)
+        if parsed is None:
+            await inbox.set_outcome(entry, "ignored")
+        elif parsed.kind == "refund":
+            await service.process_tribute_refund(parsed.external_id)
+            await inbox.set_outcome(entry, "processed")
+        else:
+            assert parsed.telegram_id is not None  # parse_webhook_payload guarantees it for payments
+            await service.process_tribute_payment(
+                telegram_id=parsed.telegram_id,
+                external_id=parsed.external_id,
+                amount=parsed.amount,
+                currency=parsed.currency,
+                raw_payload=payload,
+            )
+            await inbox.set_outcome(entry, "processed")
+            confirm_to = parsed.telegram_id
     except DuplicateWebhookError:
-        pass  # already recorded — Tribute may retry delivery; ack normally, don't double-grant
+        await inbox.set_outcome(entry, "duplicate")
+    except UnprocessableWebhookError as exc:
+        logger.error("tribute webhook %s not applied: %s", entry.id, exc)
+        await inbox.set_outcome(entry, "failed", str(exc))
 
+    await db.commit()
+    if confirm_to is not None:
+        await send_payment_confirmation(confirm_to)
     return WebhookAck()
 
 

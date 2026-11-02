@@ -5,7 +5,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.models import GameState, MoveResult
-from src.db.models import Event, Game, Message, Move, Payment, Reminder, User
+from src.db.models import Event, Game, Message, Move, Payment, Reminder, User, WebhookInbox
 
 
 class UserRepository:
@@ -35,6 +35,15 @@ class UserRepository:
         user.paid_games_available += count
         await self._session.flush()
 
+    async def revoke_paid_game(self, user: User) -> bool:
+        """Takes back one unused paid game. Returns False if none is left to take back — the
+        game may already have been started, and a refund must not push the balance negative."""
+        if user.paid_games_available <= 0:
+            return False
+        user.paid_games_available -= 1
+        await self._session.flush()
+        return True
+
     async def consume_paid_game(self, user: User) -> None:
         if user.paid_games_available <= 0:
             raise ValueError("user has no paid games available")
@@ -63,8 +72,13 @@ class GameRepository:
         GameService._RESUMABLE_STATUSES; a background cron flipping the status must not force
         the player to start a fresh paid/free game just because they came back after 48h).
         Excludes 'finished' — that's the only truly terminal status."""
+        # The unique index only covers 'active', so two racing starts can leave two 'setup' rows —
+        # pick the newest rather than raising MultipleResultsFound on every later call.
         result = await self._session.execute(
-            select(Game).where(Game.user_id == user_id, Game.status.in_(("setup", "active", "abandoned")))
+            select(Game)
+            .where(Game.user_id == user_id, Game.status.in_(("setup", "active", "abandoned")))
+            .order_by(Game.created_at.desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
 
@@ -128,9 +142,18 @@ class MoveRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(self, game_id: uuid.UUID, result: MoveResult) -> Move:
+    async def get_by_idempotency_key(self, game_id: uuid.UUID, key: str) -> Move | None:
+        result = await self._session.execute(
+            select(Move).where(Move.game_id == game_id, Move.idempotency_key == key)
+        )
+        return result.scalar_one_or_none()
+
+    async def create(
+        self, game_id: uuid.UUID, result: MoveResult, idempotency_key: str | None = None
+    ) -> Move:
         move = Move(
             game_id=game_id,
+            idempotency_key=idempotency_key,
             turn=result.turn,
             roll=result.roll,
             from_pos=result.from_position,
@@ -175,6 +198,15 @@ class MessageRepository:
         await self._session.flush()
         return message
 
+    async def get_for_move(self, move_id: int) -> Message | None:
+        result = await self._session.execute(
+            select(Message)
+            .where(Message.move_id == move_id, Message.role == "guide")
+            .order_by(Message.id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_for_game(self, game_id: uuid.UUID) -> list[Message]:
         result = await self._session.execute(
             select(Message).where(Message.game_id == game_id).order_by(Message.id)
@@ -213,6 +245,24 @@ class PaymentRepository:
         self._session.add(payment)
         await self._session.flush()
         return payment
+
+
+class WebhookInboxRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(self, provider: str, event_name: str | None, payload: dict) -> WebhookInbox:
+        entry = WebhookInbox(
+            provider=provider, event_name=event_name, payload=payload, status="received"
+        )
+        self._session.add(entry)
+        await self._session.flush()
+        return entry
+
+    async def set_outcome(self, entry: WebhookInbox, status: str, note: str | None = None) -> None:
+        entry.status = status
+        entry.note = note
+        await self._session.flush()
 
 
 class ReminderRepository:

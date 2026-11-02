@@ -3,12 +3,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from src.api.routers import game, health, payments
+from src.config import get_settings
 from src.services.billing_service import InvalidWebhookSignatureError
 from src.services.game_service import GameNotActiveError, GameNotFoundError
 
 logger = structlog.get_logger()
 
-app = FastAPI(title="Lila Game API")
+settings = get_settings()
+settings.ensure_production_secrets()
+
+# The interactive docs would publish the whole internal API surface of a public service.
+docs_url = None if settings.is_production else "/docs"
+app = FastAPI(title="Lila Game API", docs_url=docs_url, redoc_url=None, openapi_url=docs_url and "/openapi.json")
 
 app.include_router(health.router)
 app.include_router(game.router)

@@ -12,9 +12,20 @@ def start_game_kb() -> InlineKeyboardMarkup:
     )
 
 
-def roll_kb() -> InlineKeyboardMarkup:
+def roll_kb(retry_key: str | None = None) -> InlineKeyboardMarkup:
+    """`retry_key` re-sends a failed roll under its original idempotency key, so a roll that did
+    reach the API is replayed instead of being rolled a second time."""
+    callback_data = f"roll:{retry_key}" if retry_key else "roll"
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_ROLL, callback_data="roll")]]
+        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_ROLL, callback_data=callback_data)]]
+    )
+
+
+def retry_summary_kb(game_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=texts.BTN_RETRY_SUMMARY, callback_data=f"retry_summary:{game_id}")]
+        ]
     )
 
 
