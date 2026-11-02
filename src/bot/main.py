@@ -1,18 +1,33 @@
 import asyncio
+import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, MenuButtonCommands
+from aiogram.types import BotCommand, ErrorEvent, MenuButtonCommands, Message
 
+from src.bot import keyboards, texts
 from src.bot.api_client import GameApiClient
 from src.bot.handlers import admin, game, start
 from src.config import get_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+async def on_unhandled_error(event: ErrorEvent) -> bool:
+    """Last line of defense: an unexpected exception must not leave the player facing silence and
+    a removed button. "Начать партию" resumes a game in progress, so it is always a safe way back."""
+    logger.error("unhandled error in update handler", exc_info=event.exception)
+    update = event.update
+    target = update.message or (update.callback_query.message if update.callback_query else None)
+    if isinstance(target, Message):
+        with contextlib.suppress(TelegramAPIError):
+            await target.answer(texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.start_game_kb())
+    return True
 
 
 async def main() -> None:
@@ -25,6 +40,7 @@ async def main() -> None:
     dp.include_router(start.router)
     dp.include_router(admin.router)
     dp.include_router(game.router)
+    dp.errors.register(on_unhandled_error)
 
     api_client = GameApiClient()
     dp["api"] = api_client

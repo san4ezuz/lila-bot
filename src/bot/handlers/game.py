@@ -8,8 +8,9 @@ from src.api.schemas import CellOut
 from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient
 from src.bot.cell_images import get_cell_image_path
+from src.bot.handlers.start import submit_intention
 from src.bot.states import GameStates
-from src.bot.utils import callback_message, esc, typing_indicator
+from src.bot.utils import callback_message, current_game_id, esc, typing_indicator
 
 router = Router(name="game")
 
@@ -50,15 +51,49 @@ def _cell_header(cell: CellOut) -> str:
     return texts.CELL_HEADER.format(cell_id=cell.id, cell_name=esc(cell.name))
 
 
-@router.callback_query(F.data == "roll")
+async def _on_game_gone(message: Message, state: FSMContext) -> None:
+    """The API says this game can't continue (409) — e.g. a tap on an old button after the finish.
+    Drop the stale id and offer a fresh start instead of an error that retrying can't fix."""
+    await state.clear()
+    await message.answer(texts.WELCOME_SHORT, reply_markup=keyboards.start_game_kb())
+
+
+async def _send_summary(msg: Message, state: FSMContext, api: GameApiClient, game_id: str) -> None:
+    async with typing_indicator(msg.bot, msg.chat.id):
+        try:
+            finish = await api.finish_game(game_id)
+        except ApiError:
+            await msg.answer(
+                texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.retry_summary_kb(game_id)
+            )
+            return
+
+    await msg.answer(esc(finish.summary) + texts.FINISHED_SUFFIX)
+    # FINISHED_SUFFIX ends with the one-word feedback question — the next text message in
+    # this chat is the answer to that, not a reply to a cell (see on_feedback below).
+    await state.set_state(GameStates.waiting_feedback)
+
+
+@router.callback_query(F.data.startswith("roll"))
 async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
     msg = callback_message(callback)
     if msg is None:
         await callback.answer()
         return
 
-    data = await state.get_data()
-    game_id = data["game_id"]
+    try:
+        game_id = await current_game_id(state, api, callback.from_user.id)
+    except ApiError:
+        await callback.answer(texts.GUIDE_THINKING_ERROR)
+        return
+    if game_id is None:
+        await callback.answer()
+        await msg.answer(texts.WELCOME_SHORT, reply_markup=keyboards.start_game_kb())
+        return
+    if await state.get_state() == GameStates.waiting_intention.state:
+        await callback.answer()
+        await msg.answer(texts.ASK_INTENTION_AGAIN)
+        return
 
     if game_id in _rolling_games:
         await callback.answer("Проводник ещё обрабатывает предыдущий бросок — секунду.")
@@ -72,13 +107,23 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
     except TelegramBadRequest:
         pass
 
+    # Keyed on the button, not the tap: every tap on one button is the same roll. `callback.id`
+    # would differ per tap and dedupe nothing. A retry button carries the key of the failed roll.
+    idempotency_key = (callback.data or "").partition(":")[2] or f"{msg.chat.id}:{msg.message_id}"
+
     _rolling_games.add(game_id)
     try:
         async with typing_indicator(callback.bot, msg.chat.id):
             try:
-                result = await api.roll(game_id, idempotency_key=callback.id)
-            except ApiError:
-                await msg.answer(texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.roll_kb())
+                result = await api.roll(game_id, idempotency_key=idempotency_key)
+            except ApiError as exc:
+                if exc.status_code == 409:
+                    await _on_game_gone(msg, state)
+                else:
+                    await msg.answer(
+                        texts.GUIDE_THINKING_ERROR,
+                        reply_markup=keyboards.roll_kb(idempotency_key),
+                    )
                 return
     finally:
         _rolling_games.discard(game_id)
@@ -96,24 +141,30 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
         body = f"{header}\n\n{body}"
 
     if result.finished:
-        finish = await api.finish_game(game_id)
         await _send_cell_message(msg, cell_id, body)
-        await msg.answer(esc(finish.summary) + texts.FINISHED_SUFFIX)
-        # FINISHED_SUFFIX ends with the one-word feedback question — the next text message in
-        # this chat is the answer to that, not a reply to a cell (see on_feedback below).
-        await state.set_state(GameStates.waiting_feedback)
+        await _send_summary(msg, state, api, game_id)
         return
 
     if result.extra_roll:
         await _send_cell_message(msg, cell_id, body, reply_markup=keyboards.roll_kb())
         return
 
-    if result.cell is not None:
+    # A burnt roll landed nowhere new — there's no cell to reflect on, only the next roll.
+    if result.cell is not None and result.event != "blocked_overshoot":
         await _send_cell_message(
             msg, cell_id, f"{body}\n\n{texts.ASK_FOR_TEXT_RESPONSE}", reply_markup=keyboards.response_kb()
         )
     else:
         await _send_cell_message(msg, cell_id, body, reply_markup=keyboards.roll_kb())
+
+
+@router.callback_query(F.data.startswith("retry_summary:"))
+async def on_retry_summary(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
+    await callback.answer()
+    msg = callback_message(callback)
+    if msg is None:
+        return
+    await _send_summary(msg, state, api, (callback.data or "").split(":", 1)[1])
 
 
 @router.callback_query(F.data == "skip_response")
@@ -207,8 +258,11 @@ async def on_opt_out_reminders(callback: CallbackQuery, api: GameApiClient) -> N
 
 @router.message(StateFilter(None), F.text)
 async def on_player_response(message: Message, state: FSMContext, api: GameApiClient) -> None:
-    data = await state.get_data()
-    game_id = data.get("game_id")
+    try:
+        game_id = await current_game_id(state, api, message.chat.id)
+    except ApiError:
+        await message.answer(texts.GUIDE_THINKING_ERROR)
+        return
     if game_id is None:
         # No active game in this chat — show the same entry point as /start rather than
         # silently ignoring the message (docs/UX_ITERATION_1.md §5).
@@ -216,6 +270,11 @@ async def on_player_response(message: Message, state: FSMContext, api: GameApiCl
             texts.WELCOME_SHORT,
             reply_markup=keyboards.start_game_kb(),
         )
+        return
+
+    # The lookup above found a game still waiting for its request — this text is that request.
+    if await state.get_state() == GameStates.waiting_intention.state:
+        await submit_intention(message, state, api, game_id)
         return
 
     text = (message.text or "").strip()
@@ -226,11 +285,19 @@ async def on_player_response(message: Message, state: FSMContext, api: GameApiCl
     async with typing_indicator(message.bot, message.chat.id):
         try:
             result = await api.respond(game_id, text)
-        except ApiError:
-            await message.answer(texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.roll_kb())
+        except ApiError as exc:
+            if exc.status_code == 409:
+                await _on_game_gone(message, state)
+            else:
+                await message.answer(texts.GUIDE_THINKING_ERROR, reply_markup=keyboards.roll_kb())
             return
 
     body = esc(result.guide_message)
     if result.safety_flag:
         body += texts.SAFETY_HELP_LINE
     await message.answer(body, reply_markup=keyboards.roll_kb())
+
+
+@router.message(StateFilter(None))
+async def on_non_text_message(message: Message) -> None:
+    await message.answer(texts.TEXT_ONLY_MESSAGE)

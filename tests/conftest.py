@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import URL, make_url, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config import get_settings
@@ -20,13 +21,27 @@ def stub_llm_calls(monkeypatch):
     monkeypatch.setattr("src.llm.guide._call", _fake_call)
 
 
+async def _ensure_database(server_url: URL, name: str) -> None:
+    engine = create_async_engine(server_url, isolation_level="AUTOCOMMIT")
+    async with engine.connect() as connection:
+        exists = await connection.scalar(
+            text("select 1 from pg_database where datname = :name"), {"name": name}
+        )
+        if not exists:
+            await connection.execute(text(f'create database "{name}"'))
+    await engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def db_session() -> AsyncSession:
-    """Runs each test inside its own transaction against the local dev Postgres,
-    rolled back afterwards so tests never leave data behind. Requires `docker compose up -d db`
-    and DATABASE_URL pointed at it (see .env.example)."""
-    settings = get_settings()
-    engine = create_async_engine(settings.database_url)
+    """Runs each test inside its own transaction, rolled back afterwards so tests never leave data
+    behind. Uses a separate `<name>_test` database on the DATABASE_URL server, because cron-style
+    services scan whole tables and would otherwise trip over rows in the dev database. Requires
+    `docker compose up -d db` (see .env.example)."""
+    url = make_url(get_settings().database_url)
+    test_url = url.set(database=f"{url.database}_test")
+    await _ensure_database(url, test_url.database)
+    engine = create_async_engine(test_url)
 
     async with engine.connect() as connection:
         await connection.run_sync(Base.metadata.create_all)
