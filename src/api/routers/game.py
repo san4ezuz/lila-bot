@@ -42,13 +42,13 @@ async def start_game(
 ) -> StartGameResponse | JSONResponse:
     service = GameService(db)
     try:
-        game, guide_message = await service.start_game(
-            body.telegram_id, body.username, body.first_name, body.intention
-        )
+        game, guide_message = await service.start_game(body.telegram_id, body.intention)
     except PaymentRequiredError as exc:
         return JSONResponse(
             status_code=402,
-            content=PaymentRequiredResponse(price=exc.price, pay_url=exc.pay_url).model_dump(),
+            content=PaymentRequiredResponse(
+                price=exc.price, pay_url=exc.pay_url, crisis=exc.crisis
+            ).model_dump(),
         )
 
     return StartGameResponse(
@@ -67,8 +67,10 @@ async def set_intention(
 ) -> SetIntentionResponse:
     service = GameService(db)
     game = await service.get_game(game_id)
-    guide_message = await service.set_intention(game, body.intention)
-    return SetIntentionResponse(game_id=game.id, status=game.status, guide_message=guide_message)
+    guide_message, safety_flag = await service.set_intention(game, body.intention)
+    return SetIntentionResponse(
+        game_id=game.id, status=game.status, guide_message=guide_message, safety_flag=safety_flag
+    )
 
 
 @router.post("/game/{game_id}/roll", response_model=RollResponse)
@@ -99,6 +101,7 @@ async def roll(
         turn=result.turn,
         can_roll=can_roll,
         extra_roll=result.extra_roll,
+        crisis_mode=await service.is_in_crisis(game.user_id),
     )
 
 
@@ -119,7 +122,10 @@ async def respond(
     guide_message, safety_flag = await service.respond(game, body.text)
 
     return RespondResponse(
-        guide_message=guide_message, can_roll=game.status == "active", safety_flag=safety_flag
+        guide_message=guide_message,
+        can_roll=game.status == "active",
+        safety_flag=safety_flag,
+        crisis_mode=await service.is_in_crisis(game.user_id),
     )
 
 
@@ -175,8 +181,8 @@ async def feedback(
 ) -> FeedbackAck:
     service = GameService(db)
     game = await service.get_game(game_id)
-    await service.record_feedback(game, body.text)
-    return FeedbackAck()
+    guide_message = await service.record_feedback(game, body.text)
+    return FeedbackAck(guide_message=guide_message)
 
 
 @router.get("/users/{telegram_id}/status", response_model=UserStatusResponse)

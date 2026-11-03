@@ -58,6 +58,10 @@ class UserRepository:
         user.gender = gender
         await self._session.flush()
 
+    async def mark_crisis(self, user: User) -> None:
+        user.crisis_at = datetime.now(UTC)
+        await self._session.flush()
+
 
 class GameRepository:
     def __init__(self, session: AsyncSession) -> None:

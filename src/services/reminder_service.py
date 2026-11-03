@@ -24,6 +24,7 @@ from src.core.board import Board, get_default_board
 from src.db.models import Game, User
 from src.db.repositories import GameRepository, ReminderRepository, UserRepository
 from src.services import notify
+from src.services.crisis import in_crisis_mode
 
 _STAGE_THRESHOLDS: dict[int, timedelta] = {
     1: timedelta(hours=24),
@@ -87,7 +88,7 @@ class ReminderService:
 
     async def _maybe_remind(self, game: Game, now: datetime) -> bool:
         user = await self.session.get(User, game.user_id)
-        if user is None or user.reminders_opt_out:
+        if user is None or user.reminders_opt_out or in_crisis_mode(user, now):
             return False
 
         reminder = await self.reminders.get_or_create(game.id)

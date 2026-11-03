@@ -37,4 +37,4 @@ data/          board/transition data, cell artwork
 docs/          design docs, rules, prompt versions
 ```
 
-Further design notes and progress log: [docs/PLAN.md](docs/PLAN.md). Game rules: [docs/RULES.md](docs/RULES.md).
+Roadmap and current status: [docs/ROADMAP.md](docs/ROADMAP.md). MVP design notes: [docs/PLAN.md](docs/PLAN.md). Game rules: [docs/RULES.md](docs/RULES.md).

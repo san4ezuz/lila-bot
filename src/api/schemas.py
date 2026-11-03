@@ -10,8 +10,6 @@ class ErrorResponse(BaseModel):
 
 class StartGameRequest(BaseModel):
     telegram_id: int
-    username: str | None = None
-    first_name: str | None = None
     intention: str | None = None
 
 
@@ -28,6 +26,8 @@ class PaymentRequiredResponse(BaseModel):
     error: str = "payment_required"
     price: int
     pay_url: str
+    # The player is in crisis mode: show help contacts instead of the pay button.
+    crisis: bool = False
 
 
 class SetIntentionRequest(BaseModel):
@@ -38,6 +38,7 @@ class SetIntentionResponse(BaseModel):
     game_id: uuid.UUID
     status: str
     guide_message: str
+    safety_flag: str | None = None
 
 
 class CellOut(BaseModel):
@@ -59,6 +60,7 @@ class RollResponse(BaseModel):
     turn: int
     can_roll: bool
     extra_roll: bool
+    crisis_mode: bool = False
 
 
 class RespondRequest(BaseModel):
@@ -68,7 +70,9 @@ class RespondRequest(BaseModel):
 class RespondResponse(BaseModel):
     guide_message: str
     can_roll: bool
+    # Set when this message tripped the crisis screen; `crisis_mode` — an earlier one did, recently.
     safety_flag: str | None = None
+    crisis_mode: bool = False
 
 
 class MoveOut(BaseModel):
@@ -131,6 +135,8 @@ class FeedbackRequest(BaseModel):
 
 class FeedbackAck(BaseModel):
     ok: bool = True
+    # Supportive text to show instead of the thanks, when the answer tripped the crisis screen.
+    guide_message: str | None = None
 
 
 class AdminGrantRequest(BaseModel):

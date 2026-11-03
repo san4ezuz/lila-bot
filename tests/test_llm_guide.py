@@ -11,7 +11,7 @@ import pytest
 
 import src.llm.guide as guide_module
 from src.core.board import get_default_board
-from src.llm.client import extract_text
+from src.llm.client import extract_text, supports_effort
 from src.llm.prompts import (
     build_deepen_context,
     build_interpret_cell_context,
@@ -130,7 +130,7 @@ async def test_call_falls_back_and_warns_when_thinking_used_up_max_tokens(monkey
     ],
 )
 def test_supports_effort(model, supported):
-    assert guide_module._supports_effort(model) is supported
+    assert supports_effort(model) is supported
 
 
 async def test_interpret_cell_uses_real_call_and_board_data(monkeypatch):

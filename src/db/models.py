@@ -37,6 +37,10 @@ class User(Base):
     # 'male' | 'female' | 'skip' (explicitly declined) | None (never asked) — asked once per
     # user, not per game, so correct address forms carry across a player's whole history.
     gender: Mapped[str | None] = mapped_column(String(10))
+    # Last time the player's text tripped the crisis screen (src/llm/safety.py). While recent, the
+    # bot adds help contacts to replies and holds back reminders and the paywall — see
+    # src/services/crisis.py.
+    crisis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Game(Base):

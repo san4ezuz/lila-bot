@@ -54,6 +54,9 @@ async def main() -> None:
             BotCommand(command="start", description="🎲 Играть"),
             BotCommand(command="newgame", description="🆕 Новая игра"),
             BotCommand(command="help", description="ℹ️ Что это за игра?"),
+            BotCommand(command="paysupport", description="Вопросы по оплате"),
+            BotCommand(command="terms", description="Условия"),
+            BotCommand(command="privacy", description="Конфиденциальность"),
         ]
     )
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())

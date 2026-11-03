@@ -1,3 +1,4 @@
+import asyncio
 import random
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from src.db.repositories import (
     UserRepository,
 )
 from src.llm import guide, safety
+from src.services.crisis import in_crisis_mode
 
 
 class GameNotFoundError(Exception):
@@ -34,11 +36,19 @@ class GameNotActiveError(Exception):
 # player must be able to pick it back up. "Resumable" = the player can still act on it.
 _RESUMABLE_STATUSES = ("active", "abandoned")
 
+# What the client should do when the crisis screen fires: show a supportive text with help
+# contacts instead of the usual reply.
+SAFETY_FLAG = "soft_referral"
+
 
 class PaymentRequiredError(Exception):
-    def __init__(self, price: int, pay_url: str) -> None:
+    """`crisis` — the player is in crisis mode (src/services/crisis.py): the client shows help
+    contacts instead of a pay button."""
+
+    def __init__(self, price: int, pay_url: str, crisis: bool = False) -> None:
         self.price = price
         self.pay_url = pay_url
+        self.crisis = crisis
         super().__init__(f"payment required: {price}")
 
 
@@ -61,14 +71,9 @@ class GameService:
         self.settings = get_settings()
         self.rng = random.Random()
 
-    async def start_game(
-        self,
-        telegram_id: int,
-        username: str | None,
-        first_name: str | None,
-        intention: str | None,
-    ) -> tuple[Game, str]:
-        user = await self.users.get_or_create(telegram_id, username, first_name)
+    async def start_game(self, telegram_id: int, intention: str | None) -> tuple[Game, str]:
+        # Only the Telegram id is stored — no name or username (see texts.about_game_text).
+        user = await self.users.get_or_create(telegram_id)
 
         active = await self.games.get_active_for_user(user.id)
         if active is not None:
@@ -80,6 +85,13 @@ class GameService:
         elif user.paid_games_available > 0:
             await self.users.consume_paid_game(user)
             is_paid = True
+        elif in_crisis_mode(user):
+            await self.events.log("paywall_suppressed", user.id, None, {"reason": "crisis"})
+            raise PaymentRequiredError(
+                price=self.settings.price_second_game_rub,
+                pay_url=self.settings.tribute_pay_url,
+                crisis=True,
+            )
         else:
             await self.events.log("paywall_shown", user.id, None)
             # Tribute exposes no API to mint a per-user checkout link with custom metadata
@@ -95,14 +107,25 @@ class GameService:
         await self.events.log("game_started", user.id, game.id, {"is_paid": is_paid})
 
         if intention:
-            guide_message = await self.set_intention(game, intention)
+            guide_message, _ = await self.set_intention(game, intention)
         else:
             guide_message = guide.intro_message()
             await self.messages.create(game.id, "guide", guide_message)
 
         return game, guide_message
 
-    async def set_intention(self, game: Game, intention: str) -> str:
+    async def set_intention(self, game: Game, intention: str) -> tuple[str, str | None]:
+        """Returns (guide_message, safety_flag). A request that trips the crisis screen is not
+        saved: the game stays in 'setup', and the guide would otherwise quote it back on later
+        cells («ты пришёл с запросом …»)."""
+        await self.session.commit()  # the classifier is an LLM call
+        source = await safety.check(intention)
+        if source is not None:
+            await self._on_safety_trigger(game, source, "intention")
+            guide_message = guide.safety_referral_message(asks_intention=True)
+            await self.messages.create(game.id, "guide", guide_message)
+            return guide_message, SAFETY_FLAG
+
         await self.games.set_intention(game, intention)
         await self.events.log("intention_set", game.user_id, game.id)
 
@@ -111,7 +134,7 @@ class GameService:
         gender = await self._user_gender(game.user_id)
         guide_message = guide.intention_ack_message(intention, gender)
         await self.messages.create(game.id, "guide", guide_message)
-        return guide_message
+        return guide_message, None
 
     async def roll(
         self, game: Game, idempotency_key: str | None = None
@@ -285,27 +308,50 @@ class GameService:
             await self.session.flush()
 
         await self.messages.create(game.id, "player", text)
-        safety_flag = safety.screen(text)
-        if safety_flag:
-            guide_message = guide.safety_referral_message()
-        elif game.position is not None:
-            cell = self.board.get_cell(game.position)
-            gender = await self._user_gender(game.user_id)
-            await self.session.commit()
-            guide_message = await guide.deepen(game.intention, cell, text, gender)
-        else:
-            # Player replied before their first roll landed them on a cell — nothing to deepen
-            # yet; a static nudge back to the mechanic is enough (see docs/PLAN.md §8.1).
-            guide_message = "Слышу тебя. Бросай кубик, чтобы войти в игру, и продолжим оттуда."
-        await self.messages.create(game.id, "guide", guide_message)
-
         await self.events.log(
             "player_responded", game.user_id, game.id, {"char_len": len(text)}
         )
-        if safety_flag:
-            await self.events.log("safety_triggered", game.user_id, game.id, {"flag": safety_flag})
 
-        return guide_message, safety_flag
+        source: safety.SafetySource | None = "lexical" if safety.screen(text) else None
+        if source is None:
+            # The classifier runs alongside the reply so it adds no latency; its verdict wins.
+            await self.session.commit()
+            is_risk, guide_message = await asyncio.gather(
+                safety.classify(text), self._deepen_reply(game, text)
+            )
+            if is_risk:
+                source = "classifier"
+
+        if source is not None:
+            await self._on_safety_trigger(game, source, "response")
+            guide_message = guide.safety_referral_message()
+        await self.messages.create(game.id, "guide", guide_message)
+        return guide_message, SAFETY_FLAG if source is not None else None
+
+    async def _deepen_reply(self, game: Game, text: str) -> str:
+        if game.position is None:
+            # Player replied before their first roll landed them on a cell — nothing to deepen
+            # yet; a static nudge back to the mechanic is enough (see docs/PLAN.md §8.1).
+            return "Слышу тебя. Бросай кубик, чтобы войти в игру, и продолжим оттуда."
+        cell = self.board.get_cell(game.position)
+        gender = await self._user_gender(game.user_id)
+        await self.session.commit()  # no idle-in-transaction connection during the LLM call
+        return await guide.deepen(game.intention, cell, text, gender)
+
+    async def _on_safety_trigger(self, game: Game, source: str, where: str) -> None:
+        user = await self.session.get(User, game.user_id)
+        if user is not None:
+            await self.users.mark_crisis(user)
+        await self.events.log(
+            "safety_triggered",
+            game.user_id,
+            game.id,
+            {"flag": SAFETY_FLAG, "source": source, "where": where},
+        )
+
+    async def is_in_crisis(self, user_id: int) -> bool:
+        user = await self.session.get(User, user_id)
+        return user is not None and in_crisis_mode(user)
 
     async def finish_game(self, game: Game) -> tuple[str, dict]:
         if game.status not in (*_RESUMABLE_STATUSES, "finished"):
@@ -346,14 +392,21 @@ class GameService:
             raise GameNotFoundError(str(game_id))
         return game
 
-    async def record_feedback(self, game: Game, text: str) -> None:
+    async def record_feedback(self, game: Game, text: str) -> str | None:
         """Captures the answer to the finish-time feedback question as a structured event —
         docs/PLAN.md §12's `feedback_given`. Deliberately not gated on game.status: the
         conversational prompt happens right after finish, so the game is already 'finished' by
-        the time the player replies."""
+        the time the player replies. Returns the supportive text if the answer trips the crisis
+        screen, else None."""
         await self.events.log(
             "feedback_given", game.user_id, game.id, {"text": text[:500]}
         )
+        await self.session.commit()  # the classifier is an LLM call
+        source = await safety.check(text)
+        if source is None:
+            return None
+        await self._on_safety_trigger(game, source, "feedback")
+        return guide.safety_referral_message()
 
     async def abandon_stale_games(self, hours: int = 48) -> int:
         """Marks games with no activity for `hours` as abandoned and logs `game_abandoned` per

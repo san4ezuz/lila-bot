@@ -145,3 +145,23 @@ async def test_failed_delivery_does_not_advance_stage(db_session, unique_telegra
     reminders = ReminderRepository(db_session)
     reminder = await reminders.get_or_create(game.id)
     assert reminder.stage == 0  # still eligible for a retry on the next cron run
+
+
+async def test_user_in_crisis_mode_is_not_reminded(db_session, unique_telegram_id):
+    users = UserRepository(db_session)
+    user, _ = await _make_active_game(db_session, unique_telegram_id, timedelta(hours=25))
+    await users.mark_crisis(user)
+
+    sent = await ReminderService(db_session).send_due_reminders()
+
+    assert sent == 0
+
+
+async def test_crisis_mode_expires(db_session, unique_telegram_id):
+    user, _ = await _make_active_game(db_session, unique_telegram_id, timedelta(hours=25))
+    user.crisis_at = datetime.now(UTC) - timedelta(days=30)
+    await db_session.flush()
+
+    sent = await ReminderService(db_session).send_due_reminders()
+
+    assert sent == 1

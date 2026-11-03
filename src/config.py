@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # When set, only purchases of this digital product grant a game. Unset accepts any product.
     tribute_product_id: int | None = None
     price_second_game_rub: int = 299
+    # Public links to the privacy policy and the offer (drafts: docs/legal/), shown by /privacy
+    # and /terms; and who answers payment questions in /paysupport, e.g. "@lila_support".
+    privacy_url: str = ""
+    terms_url: str = ""
+    support_contact: str = ""
     llm_model: str = "claude-haiku-5-5"
     log_level: str = "INFO"
     env: str = "local"

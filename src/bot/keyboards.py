@@ -61,16 +61,3 @@ def confirm_new_game_kb() -> InlineKeyboardMarkup:
         ]
     )
 
-
-def reminder_kb(game_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=texts.BTN_CONTINUE_GAME, callback_data=f"continue_game:{game_id}")],
-            [
-                InlineKeyboardButton(
-                    text=texts.BTN_SNOOZE_REMINDER, callback_data=f"snooze_reminder:{game_id}"
-                ),
-                InlineKeyboardButton(text=texts.BTN_OPT_OUT_REMINDERS, callback_data="opt_out_reminders"),
-            ],
-        ]
-    )

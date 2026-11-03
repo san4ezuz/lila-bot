@@ -1,7 +1,7 @@
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, User
+from aiogram.types import CallbackQuery, Message
 
 from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient, PaymentRequiredError
@@ -22,7 +22,26 @@ _busy_telegram_ids: set[int] = set()
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(texts.WELCOME_SHORT, reply_markup=keyboards.start_game_kb())
+    await message.answer(
+        texts.WELCOME_SHORT + texts.WELCOME_DISCLAIMER, reply_markup=keyboards.start_game_kb()
+    )
+
+
+@router.message(Command("privacy"))
+async def cmd_privacy(message: Message) -> None:
+    url = get_settings().privacy_url
+    await message.answer(texts.document_text("Политика конфиденциальности", url))
+
+
+@router.message(Command("terms"))
+async def cmd_terms(message: Message) -> None:
+    url = get_settings().terms_url
+    await message.answer(texts.document_text("Оферта и условия игры", url))
+
+
+@router.message(Command("paysupport"))
+async def cmd_paysupport(message: Message) -> None:
+    await message.answer(texts.paysupport_text(message.chat.id, get_settings().support_contact))
 
 
 @router.message(Command("help"))
@@ -43,15 +62,16 @@ async def on_about_game(callback: CallbackQuery) -> None:
     )
 
 
-async def _begin_game(msg: Message, state: FSMContext, api: GameApiClient, user: User) -> None:
+async def _begin_game(msg: Message, state: FSMContext, api: GameApiClient, telegram_id: int) -> None:
     """Shared by "Начать партию" and the confirmed "Новая игра" flow — both end up doing exactly
     the same thing: ask the Game API for a game (it resumes one in progress, or starts a fresh
     one, hitting the paywall on a second free attempt) and render whatever it gives back."""
     try:
-        result = await api.start_game(
-            telegram_id=user.id, username=user.username, first_name=user.first_name
-        )
+        result = await api.start_game(telegram_id=telegram_id)
     except PaymentRequiredError as exc:
+        if exc.crisis:
+            await msg.answer(texts.CRISIS_PAYWALL_MESSAGE)
+            return
         text = texts.PAYWALL_MESSAGE.format(price=exc.price)
         await msg.answer(text, reply_markup=keyboards.paywall_kb(exc.pay_url))
         return
@@ -91,7 +111,7 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
             await msg.answer(texts.ASK_GENDER_TEXT, reply_markup=keyboards.gender_kb())
             return
 
-        await _begin_game(msg, state, api, callback.from_user)
+        await _begin_game(msg, state, api, telegram_id)
     finally:
         _busy_telegram_ids.discard(telegram_id)
 
@@ -113,7 +133,7 @@ async def on_set_gender(callback: CallbackQuery, state: FSMContext, api: GameApi
             await api.set_gender(telegram_id, gender)
         except ApiError:
             pass  # not worth blocking the player over this not saving — worst case, asked again
-        await _begin_game(msg, state, api, callback.from_user)
+        await _begin_game(msg, state, api, telegram_id)
     finally:
         _busy_telegram_ids.discard(telegram_id)
 
@@ -133,6 +153,10 @@ async def submit_intention(
             # Stays in waiting_intention, so simply sending the request again retries this.
             await message.answer(texts.GUIDE_THINKING_ERROR)
             return
+    if result.safety_flag:
+        # The request wasn't saved — stay in waiting_intention, the next text is a new request.
+        await message.answer(esc(result.guide_message) + texts.SAFETY_HELP_LINE)
+        return
     await state.set_state(None)
     await message.answer(esc(result.guide_message), reply_markup=keyboards.roll_kb())
 
@@ -183,7 +207,7 @@ async def on_confirm_new_game(callback: CallbackQuery, state: FSMContext, api: G
             pass  # already finished/invalid — fine, we're about to replace it anyway
 
         await state.clear()
-        await _begin_game(msg, state, api, callback.from_user)
+        await _begin_game(msg, state, api, telegram_id)
     finally:
         _busy_telegram_ids.discard(telegram_id)
 

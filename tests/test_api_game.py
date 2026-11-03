@@ -360,3 +360,102 @@ async def test_safety_flag_is_surfaced_on_crisis_marker(client, unique_telegram_
     )
     assert resp.status_code == 200
     assert resp.json()["safety_flag"] == "soft_referral"
+
+
+async def _start(client, telegram_id, intention="тест"):
+    resp = await client.post("/game/start", json={"telegram_id": telegram_id, "intention": intention})
+    return resp.json()
+
+
+async def _user(db_session, telegram_id):
+    from src.db.repositories import UserRepository
+
+    return await UserRepository(db_session).get_by_telegram_id(telegram_id)
+
+
+async def test_crisis_response_turns_on_crisis_mode(client, db_session, unique_telegram_id):
+    game_id = (await _start(client, unique_telegram_id))["game_id"]
+
+    await client.post(f"/game/{game_id}/respond", json={"text": "думаю о суициде"})
+
+    user = await _user(db_session, unique_telegram_id)
+    assert user.crisis_at is not None
+    roll = await client.post(f"/game/{game_id}/roll")
+    assert roll.json()["crisis_mode"] is True
+    later = await client.post(f"/game/{game_id}/respond", json={"text": "спасибо"})
+    assert later.json()["safety_flag"] is None
+    assert later.json()["crisis_mode"] is True
+
+
+async def test_classifier_catches_what_the_dictionary_misses(client, db_session, unique_telegram_id, monkeypatch):
+    async def _risky(text):
+        return True
+
+    game_id = (await _start(client, unique_telegram_id))["game_id"]
+    monkeypatch.setattr("src.llm.safety.classify", _risky)
+
+    resp = await client.post(f"/game/{game_id}/respond", json={"text": "всем будет легче без меня"})
+
+    assert resp.json()["safety_flag"] == "soft_referral"
+    events = await _events(db_session, "safety_triggered")
+    assert events[-1].props["source"] == "classifier"
+
+
+async def test_crisis_intention_is_not_saved(client, db_session, unique_telegram_id):
+    game_id = (await _start(client, unique_telegram_id, intention=None))["game_id"]
+
+    resp = await client.post(f"/game/{game_id}/intention", json={"intention": "хочу умереть"})
+
+    body = resp.json()
+    assert body["safety_flag"] == "soft_referral"
+    assert body["status"] == "setup"
+    assert "хочу умереть" not in body["guide_message"]
+    state = await client.get(f"/game/{game_id}")
+    assert state.json()["intention"] is None
+
+    retry = await client.post(f"/game/{game_id}/intention", json={"intention": "отношения"})
+    assert retry.json()["status"] == "active"
+
+
+async def test_crisis_feedback_returns_support_text(client, db_session, unique_telegram_id):
+    game_id = (await _start(client, unique_telegram_id))["game_id"]
+    await client.post(f"/game/{game_id}/finish")
+
+    flagged = await client.post(f"/game/{game_id}/feedback", json={"text": "не хочу больше жить"})
+    calm = await client.post(f"/game/{game_id}/feedback", json={"text": "глубоко"})
+
+    assert flagged.json()["guide_message"]
+    assert calm.json()["guide_message"] is None
+
+
+async def test_paywall_is_replaced_by_help_in_crisis_mode(client, db_session, unique_telegram_id):
+    game_id = (await _start(client, unique_telegram_id))["game_id"]
+    await client.post(f"/game/{game_id}/respond", json={"text": "хочу умереть"})
+    await client.post(f"/game/{game_id}/finish")
+
+    second = await client.post("/game/start", json={"telegram_id": unique_telegram_id})
+
+    assert second.status_code == 402
+    assert second.json()["crisis"] is True
+    assert await _events(db_session, "paywall_shown", unique_telegram_id) == []
+
+
+async def test_name_and_username_are_not_stored(client, db_session, unique_telegram_id):
+    await client.post(
+        "/game/start",
+        json={"telegram_id": unique_telegram_id, "username": "alice", "first_name": "Алиса"},
+    )
+
+    user = await _user(db_session, unique_telegram_id)
+    assert user.username is None
+    assert user.first_name is None
+
+
+async def _events(db_session, name, telegram_id=None):
+    from src.db.models import Event
+
+    query = select(Event).where(Event.name == name).order_by(Event.id)
+    if telegram_id is not None:
+        user = await _user(db_session, telegram_id)
+        query = query.where(Event.user_id == user.id)
+    return list((await db_session.execute(query)).scalars())

@@ -139,6 +139,8 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
         body = esc(result.guide_message)
     if header is not None:
         body = f"{header}\n\n{body}"
+    if result.crisis_mode:
+        body += texts.SAFETY_HELP_REMINDER
 
     if result.finished:
         await _send_cell_message(msg, cell_id, body)
@@ -191,13 +193,20 @@ async def on_feedback(message: Message, state: FSMContext, api: GameApiClient) -
     game_id = data.get("game_id")
     text = (message.text or "").strip()[: texts.MAX_PLAYER_MESSAGE_LENGTH]
 
+    support_message = None
     if game_id is not None and text:
         try:
-            await api.feedback(game_id, text)
+            ack = await api.feedback(game_id, text)
+            support_message = ack.guide_message
         except ApiError:
             pass  # not worth blocking the player over an analytics event failing to log
 
     await state.clear()
+    if support_message:
+        await message.answer(
+            esc(support_message) + texts.SAFETY_HELP_LINE, reply_markup=keyboards.start_game_kb()
+        )
+        return
     await message.answer(texts.FEEDBACK_THANKS, reply_markup=keyboards.start_game_kb())
 
 
@@ -295,6 +304,8 @@ async def on_player_response(message: Message, state: FSMContext, api: GameApiCl
     body = esc(result.guide_message)
     if result.safety_flag:
         body += texts.SAFETY_HELP_LINE
+    elif result.crisis_mode:
+        body += texts.SAFETY_HELP_REMINDER
     await message.answer(body, reply_markup=keyboards.roll_kb())
 
 

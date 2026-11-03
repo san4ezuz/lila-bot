@@ -8,6 +8,7 @@ import httpx
 
 from src.api.schemas import (
     AdminGrantResponse,
+    FeedbackAck,
     FinishGameResponse,
     GameStateResponse,
     RespondResponse,
@@ -28,9 +29,10 @@ class ApiError(Exception):
 
 
 class PaymentRequiredError(Exception):
-    def __init__(self, price: int, pay_url: str) -> None:
+    def __init__(self, price: int, pay_url: str, crisis: bool = False) -> None:
         self.price = price
         self.pay_url = pay_url
+        self.crisis = crisis
         super().__init__(f"payment required: {price}")
 
 
@@ -57,7 +59,9 @@ class GameApiClient:
             raise ApiError(503, "api_unavailable", str(exc)) from exc
         if response.status_code == 402:
             body = response.json()
-            raise PaymentRequiredError(price=body["price"], pay_url=body["pay_url"])
+            raise PaymentRequiredError(
+                price=body["price"], pay_url=body["pay_url"], crisis=body.get("crisis", False)
+            )
         if response.is_error:
             try:
                 body = response.json()
@@ -67,22 +71,9 @@ class GameApiClient:
             raise ApiError(response.status_code, error, message)
         return response
 
-    async def start_game(
-        self,
-        telegram_id: int,
-        username: str | None = None,
-        first_name: str | None = None,
-        intention: str | None = None,
-    ) -> StartGameResponse:
+    async def start_game(self, telegram_id: int, intention: str | None = None) -> StartGameResponse:
         response = await self._request(
-            "POST",
-            "/game/start",
-            json={
-                "telegram_id": telegram_id,
-                "username": username,
-                "first_name": first_name,
-                "intention": intention,
-            },
+            "POST", "/game/start", json={"telegram_id": telegram_id, "intention": intention}
         )
         return StartGameResponse.model_validate(response.json())
 
@@ -100,8 +91,9 @@ class GameApiClient:
     async def skip(self, game_id: str) -> None:
         await self._request("POST", f"/game/{game_id}/skip")
 
-    async def feedback(self, game_id: str, text: str) -> None:
-        await self._request("POST", f"/game/{game_id}/feedback", json={"text": text})
+    async def feedback(self, game_id: str, text: str) -> FeedbackAck:
+        response = await self._request("POST", f"/game/{game_id}/feedback", json={"text": text})
+        return FeedbackAck.model_validate(response.json())
 
     async def respond(self, game_id: str, text: str) -> RespondResponse:
         response = await self._request("POST", f"/game/{game_id}/respond", json={"text": text})

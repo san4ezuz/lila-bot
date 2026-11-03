@@ -3,7 +3,6 @@ being unreachable, a stale button) can't be reached through the API contract tes
 exactly the paths that used to leave a player facing silence."""
 
 import uuid
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,9 +11,17 @@ from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Chat, Message, User
 
-from src.api.schemas import CellOut, FinishGameResponse, RollResponse, UserStatusResponse
+from src.api.schemas import (
+    CellOut,
+    FeedbackAck,
+    FinishGameResponse,
+    RespondResponse,
+    RollResponse,
+    SetIntentionResponse,
+    UserStatusResponse,
+)
 from src.bot import texts
-from src.bot.api_client import ApiError
+from src.bot.api_client import ApiError, PaymentRequiredError
 from src.bot.handlers import game, start
 from src.bot.states import GameStates
 
@@ -75,6 +82,15 @@ def _roll(event: str = "moved", **overrides) -> RollResponse:
         "extra_roll": False,
     }
     return RollResponse(**{**fields, **overrides})
+
+
+def _intention_ack(safety_flag: str | None = None) -> SetIntentionResponse:
+    return SetIntentionResponse(
+        game_id=GAME_ID,
+        status="setup" if safety_flag else "active",
+        guide_message="принято",
+        safety_flag=safety_flag,
+    )
 
 
 def _sent_text(message: MagicMock) -> str:
@@ -188,7 +204,7 @@ async def test_finish_failure_keeps_the_cell_and_offers_summary_retry(state):
 async def test_text_after_lost_state_reaches_the_game(state):
     api = AsyncMock()
     api.get_user_status.return_value = _status()
-    api.respond.return_value = SimpleNamespace(guide_message="ответ", safety_flag=None)
+    api.respond.return_value = RespondResponse(guide_message="ответ", can_roll=True)
 
     await game.on_player_response(_message("мой ответ"), state, api)
 
@@ -198,7 +214,7 @@ async def test_text_after_lost_state_reaches_the_game(state):
 async def test_text_in_setup_game_after_lost_state_becomes_the_intention(state):
     api = AsyncMock()
     api.get_user_status.return_value = _status("setup")
-    api.set_intention.return_value = SimpleNamespace(guide_message="принято")
+    api.set_intention.return_value = _intention_ack()
 
     await game.on_player_response(_message("мой запрос"), state, api)
 
@@ -223,7 +239,7 @@ async def test_start_game_survives_unreachable_api(state):
     api.start_game.side_effect = UNAVAILABLE
     message = _message()
 
-    await start._begin_game(message, state, api, User(id=CHAT_ID, is_bot=False, first_name="И"))
+    await start._begin_game(message, state, api, CHAT_ID)
 
     assert _sent_text(message) == texts.GUIDE_THINKING_ERROR
 
@@ -247,3 +263,80 @@ async def test_new_game_after_lost_state_still_asks_to_confirm(state):
     await start.cmd_new_game(message, state, api)
 
     assert _sent_text(message) == texts.CONFIRM_NEW_GAME_TEXT
+
+
+async def test_start_shows_the_disclaimer(state):
+    message = _message("/start")
+
+    await start.cmd_start(message, state)
+
+    sent = _sent_text(message)
+    assert "18+" in sent
+    assert "не психотерапия" in sent
+
+
+async def test_flagged_intention_shows_help_and_waits_for_a_new_request(state):
+    await state.set_state(GameStates.waiting_intention)
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    api.set_intention.return_value = _intention_ack(safety_flag="soft_referral")
+    message = _message("хочу умереть")
+
+    await start.on_intention(message, state, api)
+
+    assert _sent_text(message).endswith(texts.SAFETY_HELP_LINE)
+    assert "reply_markup" not in message.answer.await_args.kwargs
+    assert await state.get_state() == GameStates.waiting_intention.state
+
+
+async def test_crisis_mode_adds_help_contacts_to_replies(state):
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    api.respond.return_value = RespondResponse(guide_message="ответ", can_roll=True, crisis_mode=True)
+    message = _message()
+
+    await game.on_player_response(message, state, api)
+
+    assert _sent_text(message).endswith(texts.SAFETY_HELP_REMINDER)
+
+
+async def test_crisis_mode_adds_help_contacts_to_rolls(state):
+    api = AsyncMock()
+    api.get_user_status.return_value = _status()
+    api.roll.return_value = _roll(crisis_mode=True)
+    callback = _callback()
+
+    await game.on_roll(callback, state, api)
+
+    assert texts.SAFETY_HELP_REMINDER in _sent_text(callback.message)
+
+
+async def test_crisis_paywall_shows_help_instead_of_pay_button(state):
+    api = AsyncMock()
+    api.start_game.side_effect = PaymentRequiredError(price=299, pay_url="https://pay", crisis=True)
+    message = _message()
+
+    await start._begin_game(message, state, api, CHAT_ID)
+
+    assert _sent_text(message) == texts.CRISIS_PAYWALL_MESSAGE
+    assert "reply_markup" not in message.answer.await_args.kwargs
+
+
+async def test_flagged_feedback_gets_support_instead_of_thanks(state):
+    await state.set_state(GameStates.waiting_feedback)
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    api.feedback.return_value = FeedbackAck(guide_message="поддержка")
+    message = _message("не хочу жить")
+
+    await game.on_feedback(message, state, api)
+
+    assert _sent_text(message) == "поддержка" + texts.SAFETY_HELP_LINE
+
+
+async def test_paysupport_shows_the_telegram_id(state):
+    message = _message("/paysupport")
+
+    await start.cmd_paysupport(message)
+
+    assert str(CHAT_ID) in _sent_text(message)

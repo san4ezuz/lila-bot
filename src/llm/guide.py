@@ -17,7 +17,7 @@ import anthropic
 
 from src.config import get_settings
 from src.core.board import Cell
-from src.llm.client import extract_text, get_client
+from src.llm.client import extract_text, get_client, supports_effort
 from src.llm.prompts import (
     GUIDE_SYSTEM_PROMPT,
     build_deepen_context,
@@ -51,15 +51,6 @@ def _gendered(male: str, female: str, neutral: str, gender: str | None) -> str:
     return neutral
 
 
-def _supports_effort(model: str) -> bool:
-    """`output_config.effort` 400s on older/smaller models (confirmed for Haiku 4.5 — see
-    claude-api skill's thinking/effort reference table). Haiku 5.5 does support it, and needs it:
-    its default effort spends the token budget on thinking. Keep this an allowlist-by-exclusion of
-    known non-supporting families rather than a hardcoded model list, since docs/PLAN.md §5's
-    LLM_MODEL is operator-configurable and may change during testing."""
-    return not any(family in model.lower() for family in ("haiku-3", "haiku-4"))
-
-
 async def _call(
     context: str,
     max_tokens: int,
@@ -69,7 +60,7 @@ async def _call(
     client = get_client()
     settings = get_settings()
     kwargs: dict = {}
-    if _supports_effort(settings.llm_model):
+    if supports_effort(settings.llm_model):
         kwargs["output_config"] = {"effort": effort}
     try:
         # The dict literals below are the plain wire shapes from Anthropic's Messages API
@@ -169,16 +160,23 @@ def turn_limit_message() -> str:
     )
 
 
-def safety_referral_message() -> str:
-    """Fixed, vetted supportive text used INSTEAD of the LLM when the layer-1 lexical prescreen
+def safety_referral_message(asks_intention: bool = False) -> str:
+    """Fixed, vetted supportive text used INSTEAD of the LLM when the crisis screen
     (src/llm/safety.py) fires. A crisis disclosure is not the place to trust an unproven model
-    response even with the boundaries instruction in the system prompt — see docs/PROMPTS.md."""
-    return (
-        "Спасибо, что рассказал об этом. То, о чём ты пишешь, звучит как что-то серьёзное, "
-        "с чем стоит поговорить с живым специалистом, а не только с игрой. Если тебе тяжело "
-        "прямо сейчас, пожалуйста, обратись за поддержкой — я рядом, если хочешь продолжить "
-        "или на сегодня остановиться здесь."
+    response even with the boundaries instruction in the system prompt — see docs/PROMPTS.md.
+    Help contacts are appended by the bot (texts.SAFETY_HELP_LINE). `asks_intention` — the text
+    was the game request, which isn't saved, so the player is asked for another one."""
+    message = (
+        "Спасибо, что поделился(-ась) этим. То, о чём ты пишешь, звучит серьёзно, и с этим "
+        "стоит поговорить с живым человеком, а не только с игрой. Если тебе тяжело прямо "
+        "сейчас, пожалуйста, позвони по одному из номеров ниже — там выслушают."
     )
+    if asks_intention:
+        return (
+            f"{message}\n\nИгра никуда не денется. Если захочешь сыграть — напиши, с каким "
+            "вопросом ты приходишь, или вернись в другой день."
+        )
+    return f"{message}\n\nЯ рядом, если хочешь продолжить или на сегодня остановиться здесь."
 
 
 # --- LLM calls -------------------------------------------------------------------------------

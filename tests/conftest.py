@@ -18,7 +18,11 @@ def stub_llm_calls(monkeypatch):
     async def _fake_call(context: str, max_tokens: int, effort: str, fallback: str) -> str:
         return f"[stub effort={effort}] {fallback}"
 
+    async def _fake_classify(text: str) -> bool:
+        return False
+
     monkeypatch.setattr("src.llm.guide._call", _fake_call)
+    monkeypatch.setattr("src.llm.safety.classify", _fake_classify)
 
 
 async def _ensure_database(server_url: URL, name: str) -> None:
