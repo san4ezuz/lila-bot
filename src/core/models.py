@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 TransitionType = Literal["arrow", "snake"]
@@ -11,19 +11,6 @@ MoveEvent = Literal[
     "finished",
     "turn_limit_reached",
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class MoveRecord:
-    """One completed move, kept in GameState.history for LLM context and analytics."""
-
-    turn: int
-    roll: int
-    from_position: int | None
-    raw_position: int | None
-    final_position: int | None
-    transition: TransitionType | None
-    event: MoveEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,4 +37,3 @@ class GameState:
     turn: int = 0
     finished: bool = False
     finish_reason: Literal["enlightenment", "turn_limit"] | None = None
-    history: tuple[MoveRecord, ...] = field(default_factory=tuple)

@@ -179,16 +179,6 @@ def test_cannot_roll_on_an_already_finished_game():
         apply_roll(state, 4, BOARD)
 
 
-def test_history_accumulates_one_record_per_roll():
-    state = create_initial_state()
-    state, _ = apply_roll(state, 2, BOARD)
-    state, _ = apply_roll(state, 6, BOARD)
-    state, _ = apply_roll(state, 4, BOARD)
-
-    assert len(state.history) == 3
-    assert [m.turn for m in state.history] == [1, 2, 3]
-
-
 def test_shortest_path_rolls_returns_none_when_already_finished():
     assert shortest_path_rolls(68, BOARD) is None
 

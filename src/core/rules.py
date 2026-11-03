@@ -1,8 +1,9 @@
 from collections import deque
+from dataclasses import replace
 
 from src.core.board import BOARD_MAX_CELL, ENTRY_CELL, FINISH_CELL, Board
 from src.core.dice import ENTRY_GUARANTEE_ATTEMPTS
-from src.core.models import GameState, MoveEvent, MoveRecord, MoveResult
+from src.core.models import GameState, MoveEvent, MoveResult, TransitionType
 
 # 60-turn cap (docs/RULES.md §5) — a game that hasn't reached cell 68 by then is force-finished.
 # Paired with ASSIST_FROM_TURN below, which steers the dice toward the finish well before the
@@ -50,64 +51,13 @@ def apply_roll(
 
     if not state.in_play:
         if roll == ENTRY_CELL or next_turn >= ENTRY_GUARANTEE_ATTEMPTS:
-            new_state = GameState(
-                position=ENTRY_CELL,
-                in_play=True,
-                turn=next_turn,
-                history=state.history
-                + (
-                    MoveRecord(
-                        turn=next_turn,
-                        roll=roll,
-                        from_position=None,
-                        raw_position=ENTRY_CELL,
-                        final_position=ENTRY_CELL,
-                        transition=None,
-                        event="entered",
-                    ),
-                ),
+            new_state, result = _move(
+                next_turn, roll, None, ENTRY_CELL, ENTRY_CELL, None, "entered", extra_roll=True
             )
-            result = MoveResult(
-                turn=next_turn,
-                roll=roll,
-                from_position=None,
-                raw_position=ENTRY_CELL,
-                final_position=ENTRY_CELL,
-                transition=None,
-                event="entered",
-                extra_roll=True,
-                finished=False,
+        else:
+            new_state, result = _move(
+                next_turn, roll, None, None, None, None, "not_entered", extra_roll=False
             )
-            return _apply_turn_limit(new_state, result, turn_limit)
-
-        new_state = GameState(
-            position=None,
-            in_play=False,
-            turn=next_turn,
-            history=state.history
-            + (
-                MoveRecord(
-                    turn=next_turn,
-                    roll=roll,
-                    from_position=None,
-                    raw_position=None,
-                    final_position=None,
-                    transition=None,
-                    event="not_entered",
-                ),
-            ),
-        )
-        result = MoveResult(
-            turn=next_turn,
-            roll=roll,
-            from_position=None,
-            raw_position=None,
-            final_position=None,
-            transition=None,
-            event="not_entered",
-            extra_roll=False,
-            finished=False,
-        )
         return _apply_turn_limit(new_state, result, turn_limit)
 
     assert state.position is not None
@@ -115,83 +65,73 @@ def apply_roll(
     raw_position = from_position + roll
 
     if raw_position > BOARD_MAX_CELL:
-        new_state = GameState(
-            position=from_position,
-            in_play=True,
-            turn=next_turn,
-            history=state.history
-            + (
-                MoveRecord(
-                    turn=next_turn,
-                    roll=roll,
-                    from_position=from_position,
-                    raw_position=raw_position,
-                    final_position=from_position,
-                    transition=None,
-                    event="blocked_overshoot",
-                ),
-            ),
-        )
-        result = MoveResult(
-            turn=next_turn,
-            roll=roll,
-            from_position=from_position,
-            raw_position=raw_position,
-            final_position=from_position,
-            transition=None,
-            event="blocked_overshoot",
+        new_state, result = _move(
+            next_turn,
+            roll,
+            from_position,
+            raw_position,
+            from_position,
+            None,
+            "blocked_overshoot",
             extra_roll=roll == 6,
-            finished=False,
         )
         return _apply_turn_limit(new_state, result, turn_limit)
 
-    if raw_position == FINISH_CELL:
-        final_position = FINISH_CELL
-        transition = None
-    else:
+    final_position = raw_position
+    transition: TransitionType | None = None
+    if raw_position != FINISH_CELL:
         transition_lookup = board.resolve_transition(raw_position)
-        if transition_lookup is None:
-            final_position = raw_position
-            transition = None
-        else:
+        if transition_lookup is not None:
             final_position, transition = transition_lookup
 
     finished = final_position == FINISH_CELL
-    event: MoveEvent = "finished" if finished else "moved"
+    new_state, result = _move(
+        next_turn,
+        roll,
+        from_position,
+        raw_position,
+        final_position,
+        transition,
+        "finished" if finished else "moved",
+        extra_roll=(roll == 6) and not finished,
+    )
+    return _apply_turn_limit(new_state, result, turn_limit)
 
+
+def _move(
+    turn: int,
+    roll: int,
+    from_position: int | None,
+    raw_position: int | None,
+    final_position: int | None,
+    transition: TransitionType | None,
+    event: MoveEvent,
+    *,
+    extra_roll: bool,
+) -> tuple[GameState, MoveResult]:
+    """Build the post-roll state and its MoveResult. The player is on the board iff they have a
+    final position; only reaching the finish cell (event "finished") ends the game here — the
+    turn limit is applied separately by _apply_turn_limit()."""
+    finished = event == "finished"
     new_state = GameState(
         position=final_position,
-        in_play=True,
-        turn=next_turn,
+        in_play=final_position is not None,
+        turn=turn,
         finished=finished,
         finish_reason="enlightenment" if finished else None,
-        history=state.history
-        + (
-            MoveRecord(
-                turn=next_turn,
-                roll=roll,
-                from_position=from_position,
-                raw_position=raw_position,
-                final_position=final_position,
-                transition=transition,
-                event=event,
-            ),
-        ),
     )
     result = MoveResult(
-        turn=next_turn,
+        turn=turn,
         roll=roll,
         from_position=from_position,
         raw_position=raw_position,
         final_position=final_position,
         transition=transition,
         event=event,
-        extra_roll=(roll == 6) and not finished,
+        extra_roll=extra_roll,
         finished=finished,
     )
-    if finished:
-        return new_state, result
-    return _apply_turn_limit(new_state, result, turn_limit)
+    return new_state, result
 
 
 def _apply_turn_limit(
@@ -200,26 +140,10 @@ def _apply_turn_limit(
     if turn_limit is None or state.finished or state.turn < turn_limit:
         return state, result
 
-    limited_state = GameState(
-        position=state.position,
-        in_play=state.in_play,
-        turn=state.turn,
-        finished=True,
-        finish_reason="turn_limit",
-        history=state.history,
+    return (
+        replace(state, finished=True, finish_reason="turn_limit"),
+        replace(result, event="turn_limit_reached", extra_roll=False, finished=True),
     )
-    limited_result = MoveResult(
-        turn=result.turn,
-        roll=result.roll,
-        from_position=result.from_position,
-        raw_position=result.raw_position,
-        final_position=result.final_position,
-        transition=result.transition,
-        event="turn_limit_reached",
-        extra_roll=False,
-        finished=True,
-    )
-    return limited_state, limited_result
 
 
 def shortest_path_rolls(position: int, board: Board) -> list[int] | None:

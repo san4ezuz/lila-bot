@@ -236,10 +236,10 @@
 
 ## 12. Рефакторинг (делать попутно с этапами, не отдельным проектом)
 
-- `src/core/rules.py::apply_roll` — четыре почти одинаковых блока сборки `GameState` + `MoveRecord`
-  + `MoveResult`; свести к одному helper.
-- `GameState.history` строится в `apply_roll`, но сервис его не использует (состояние собирается
-  из `games` без истории) — убрать.
+- ~~`src/core/rules.py::apply_roll` — четыре почти одинаковых блока сборки состояния~~ — сведены к
+  helper `_move`, `_apply_turn_limit` через `dataclasses.replace` (2026-11-03).
+- ~~`GameState.history` строится в `apply_roll`, но сервис его не использует~~ — удалён вместе с
+  `MoveRecord` (2026-11-03); история партии — только таблица `moves`.
 - ~~Мёртвый код `keyboards.reminder_kb`, `texts.MENU_BUTTON_TEXT`~~ — удалён (этап 1).
 - Статичные русские тексты в трёх местах (`bot/texts.py`, `llm/guide.py`, `services/reminder_service.py`,
   плюс строки в `game_service.py`) — свести в один каталог, это же подготовка к мультиязычности.
