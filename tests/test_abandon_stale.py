@@ -31,6 +31,7 @@ async def test_abandon_stale_games_marks_inactive_games_and_logs_event(db_sessio
     event = result.scalar_one()
     assert event.game_id == game.id
     assert event.user_id == user.id
+    assert event.props == {"turn": 0, "position": None, "in_play": False}
 
 
 async def test_abandon_stale_games_leaves_recently_active_games_alone(db_session, unique_telegram_id):

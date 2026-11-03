@@ -22,7 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.board import Board, get_default_board
 from src.db.models import Game, User
-from src.db.repositories import GameRepository, ReminderRepository, UserRepository
+from src.db.repositories import (
+    EventRepository,
+    GameRepository,
+    ReminderRepository,
+    UserRepository,
+)
 from src.services import notify
 from src.services.crisis import in_crisis_mode
 
@@ -67,6 +72,7 @@ class ReminderService:
         self.games = GameRepository(session)
         self.users = UserRepository(session)
         self.reminders = ReminderRepository(session)
+        self.events = EventRepository(session)
         self.board: Board = get_default_board()
 
     async def send_due_reminders(self) -> int:
@@ -112,6 +118,9 @@ class ReminderService:
             # same stage, not silently skip it (see notify.send_message's docstring).
             return False
         await self.reminders.set_stage(reminder, next_stage)
+        await self.events.log(
+            "reminder_sent", user.id, game.id, {"stage": next_stage, "position": game.position}
+        )
         return True
 
     async def opt_out(self, telegram_id: int) -> None:

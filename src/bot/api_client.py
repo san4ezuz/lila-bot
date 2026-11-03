@@ -15,6 +15,7 @@ from src.api.schemas import (
     RollResponse,
     SetIntentionResponse,
     StartGameResponse,
+    StatsResponse,
     UserStatusResponse,
 )
 from src.config import get_settings
@@ -116,6 +117,15 @@ class GameApiClient:
             "POST", "/admin/grant", json={"telegram_id": telegram_id, "count": count}
         )
         return AdminGrantResponse.model_validate(response.json())
+
+    async def track(self, telegram_id: int, name: str, **props: str | int | bool | None) -> None:
+        await self._request(
+            "POST", "/events", json={"telegram_id": telegram_id, "name": name, "props": props}
+        )
+
+    async def admin_stats(self, days: int) -> StatsResponse:
+        response = await self._request("GET", "/admin/stats", params={"days": days})
+        return StatsResponse.model_validate(response.json())
 
     async def set_gender(self, telegram_id: int, gender: str) -> None:
         await self._request("POST", f"/users/{telegram_id}/gender", json={"gender": gender})

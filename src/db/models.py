@@ -41,6 +41,8 @@ class User(Base):
     # bot adds help contacts to replies and holds back reminders and the paywall — see
     # src/services/crisis.py.
     crisis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Traffic source from the first `/start <source>` deep link; set once, never overwritten.
+    source: Mapped[str | None] = mapped_column(String(64))
 
 
 class Game(Base):
@@ -179,4 +181,31 @@ class Event(Base):
     game_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     props: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LlmCall(Base):
+    """One model call (src/llm/client.py::LlmResult) — tokens and outcome only, never the text.
+    Feeds cost per game, the LLM limits (src/services/llm_limits.py) and the fallback alerts."""
+
+    __tablename__ = "llm_calls"
+    __table_args__ = (
+        Index("ix_llm_calls_created", "created_at"),
+        Index("ix_llm_calls_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger)
+    game_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # 'not_entered' | 'interpret_cell' | 'deepen' | 'summary' | 'classifier'
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer)
+    stop_reason: Mapped[str | None] = mapped_column(String(30))
+    is_fallback: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

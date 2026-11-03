@@ -15,12 +15,16 @@ from src.db.models import Game, Move, User
 from src.db.repositories import (
     EventRepository,
     GameRepository,
+    LlmCallRepository,
     MessageRepository,
     MoveRepository,
     UserRepository,
 )
 from src.llm import guide, safety
+from src.llm.client import LlmResult, skipped_result
+from src.services.alerts import note_llm_result
 from src.services.crisis import in_crisis_mode
+from src.services.llm_limits import LlmLimits
 
 
 class GameNotFoundError(Exception):
@@ -67,6 +71,8 @@ class GameService:
         self.moves = MoveRepository(session)
         self.messages = MessageRepository(session)
         self.events = EventRepository(session)
+        self.llm_calls = LlmCallRepository(session)
+        self.limits = LlmLimits(session)
         self.board: Board = get_default_board()
         self.settings = get_settings()
         self.rng = random.Random()
@@ -119,7 +125,8 @@ class GameService:
         saved: the game stays in 'setup', and the guide would otherwise quote it back on later
         cells («ты пришёл с запросом …»)."""
         await self.session.commit()  # the classifier is an LLM call
-        source = await safety.check(intention)
+        source, classifier_call = await safety.check(intention)
+        await self._record_llm(game, classifier_call)
         if source is not None:
             await self._on_safety_trigger(game, source, "intention")
             guide_message = guide.safety_referral_message(asks_intention=True)
@@ -227,10 +234,18 @@ class GameService:
         gender = await self._user_gender(game.user_id)
 
         if result.event == "not_entered" or result.final_position is None:
+            use_llm = await self.limits.allows_call(game.user_id, game.id)
             await self.session.commit()  # no idle-in-transaction connection during the LLM call
-            return await guide.not_entered_message(
-                game.intention, result.roll, result.turn, ENTRY_GUARANTEE_ATTEMPTS, gender
+            reply = await guide.not_entered_message(
+                game.intention,
+                result.roll,
+                result.turn,
+                ENTRY_GUARANTEE_ATTEMPTS,
+                gender,
+                use_llm=use_llm,
             )
+            await self._record_llm(game, reply)
+            return reply.text
         if result.event == "turn_limit_reached":
             return guide.turn_limit_message()
 
@@ -252,8 +267,9 @@ class GameService:
                 if result.transition is not None and result.raw_position is not None
                 else None
             )
+            use_llm = await self.limits.allows_call(game.user_id, game.id)
             await self.session.commit()
-            cell_message = await guide.interpret_cell(
+            cell_reply = await guide.interpret_cell(
                 intention=game.intention,
                 cell=cell,
                 event=result.event,
@@ -262,7 +278,10 @@ class GameService:
                 visited=visited,
                 recent_player_answers=recent_answers,
                 gender=gender,
+                use_llm=use_llm,
             )
+            await self._record_llm(game, cell_reply)
+            cell_message = cell_reply.text
             # Entry guaranteed by ENTRY_GUARANTEE_ATTEMPTS fires without an actual 6 — say so
             # before the LLM's interpretation of the cell itself.
             if result.event == "entered" and result.roll != ENTRY_CELL:
@@ -275,6 +294,13 @@ class GameService:
         if result.roll == 6 and result.extra_roll:
             message = f"{message}\n\n{guide.six_extra_roll_note()}"
         return message
+
+    async def _record_llm(self, game: Game, *results: LlmResult | None) -> None:
+        for result in results:
+            if result is None:
+                continue
+            await self.llm_calls.record(result, game.user_id, game.id)
+            note_llm_result(result)
 
     async def _user_gender(self, user_id: int) -> str | None:
         user = await self.session.get(User, user_id)
@@ -313,13 +339,19 @@ class GameService:
         )
 
         source: safety.SafetySource | None = "lexical" if safety.screen(text) else None
+        guide_message = ""
         if source is None:
+            cell_reply_allowed = await self.limits.allows_cell_reply(game.user_id, game.id)
+            use_llm = cell_reply_allowed and await self.limits.allows_call(game.user_id, game.id)
             # The classifier runs alongside the reply so it adds no latency; its verdict wins.
             await self.session.commit()
-            is_risk, guide_message = await asyncio.gather(
-                safety.classify(text), self._deepen_reply(game, text)
+            classifier_call, reply = await asyncio.gather(
+                safety.classify(text),
+                self._deepen_reply(game, text, use_llm, cell_reply_allowed),
             )
-            if is_risk:
+            await self._record_llm(game, classifier_call, reply)
+            guide_message = reply.text
+            if safety.is_risk(classifier_call):
                 source = "classifier"
 
         if source is not None:
@@ -328,15 +360,21 @@ class GameService:
         await self.messages.create(game.id, "guide", guide_message)
         return guide_message, SAFETY_FLAG if source is not None else None
 
-    async def _deepen_reply(self, game: Game, text: str) -> str:
+    async def _deepen_reply(
+        self, game: Game, text: str, use_llm: bool, cell_reply_allowed: bool
+    ) -> LlmResult:
         if game.position is None:
             # Player replied before their first roll landed them on a cell — nothing to deepen
             # yet; a static nudge back to the mechanic is enough (see docs/PLAN.md §8.1).
-            return "Слышу тебя. Бросай кубик, чтобы войти в игру, и продолжим оттуда."
+            return skipped_result(
+                "deepen", "Слышу тебя. Бросай кубик, чтобы войти в игру, и продолжим оттуда."
+            )
+        if not cell_reply_allowed:
+            return skipped_result("deepen", guide.cell_reply_limit_message())
         cell = self.board.get_cell(game.position)
         gender = await self._user_gender(game.user_id)
         await self.session.commit()  # no idle-in-transaction connection during the LLM call
-        return await guide.deepen(game.intention, cell, text, gender)
+        return await guide.deepen(game.intention, cell, text, gender, use_llm=use_llm)
 
     async def _on_safety_trigger(self, game: Game, source: str, where: str) -> None:
         user = await self.session.get(User, game.user_id)
@@ -364,8 +402,11 @@ class GameService:
 
         visited = await self._visited_names(game.id)
         gender = await self._user_gender(game.user_id)
+        use_llm = await self.limits.allows_call(game.user_id, game.id)
         await self.session.commit()
-        summary = await guide.summarize_game(game.intention, visited, gender)
+        reply = await guide.summarize_game(game.intention, visited, gender, use_llm=use_llm)
+        await self._record_llm(game, reply)
+        summary = reply.text
         await self.games.set_summary(game, summary)
 
         if game.status != "finished":
@@ -402,7 +443,8 @@ class GameService:
             "feedback_given", game.user_id, game.id, {"text": text[:500]}
         )
         await self.session.commit()  # the classifier is an LLM call
-        source = await safety.check(text)
+        source, classifier_call = await safety.check(text)
+        await self._record_llm(game, classifier_call)
         if source is None:
             return None
         await self._on_safety_trigger(game, source, "feedback")
@@ -417,7 +459,12 @@ class GameService:
         stale = await self.games.find_stale_active(cutoff)
         for game in stale:
             await self.games.mark_abandoned(game)
-            await self.events.log("game_abandoned", game.user_id, game.id, {"turn": game.turn})
+            await self.events.log(
+                "game_abandoned",
+                game.user_id,
+                game.id,
+                {"turn": game.turn, "position": game.position, "in_play": game.in_play},
+            )
         return len(stale)
 
     async def get_user_status(self, telegram_id: int) -> dict:

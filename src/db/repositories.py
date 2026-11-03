@@ -1,11 +1,22 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.models import GameState, MoveResult
-from src.db.models import Event, Game, Message, Move, Payment, Reminder, User, WebhookInbox
+from src.db.models import (
+    Event,
+    Game,
+    LlmCall,
+    Message,
+    Move,
+    Payment,
+    Reminder,
+    User,
+    WebhookInbox,
+)
+from src.llm.client import LlmResult
 
 
 class UserRepository:
@@ -61,6 +72,12 @@ class UserRepository:
     async def mark_crisis(self, user: User) -> None:
         user.crisis_at = datetime.now(UTC)
         await self._session.flush()
+
+    async def set_source_once(self, user: User, source: str) -> None:
+        """First touch wins: a later `/start <other>` doesn't reattribute the player."""
+        if user.source is None:
+            user.source = source
+            await self._session.flush()
 
 
 class GameRepository:
@@ -211,6 +228,23 @@ class MessageRepository:
         )
         return result.scalar_one_or_none()
 
+    async def count_player_since_last_move(self, game_id: uuid.UUID) -> int:
+        """Player messages since the guide's last message about a move — i.e. replies on the
+        current cell. Feeds the per-cell LLM limit."""
+        last_move_message = (
+            select(func.coalesce(func.max(Message.id), 0))
+            .where(Message.game_id == game_id, Message.move_id.is_not(None))
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select(func.count()).where(
+                Message.game_id == game_id,
+                Message.role == "player",
+                Message.id > last_move_message,
+            )
+        )
+        return int(result.scalar_one())
+
     async def list_for_game(self, game_id: uuid.UUID) -> list[Message]:
         result = await self._session.execute(
             select(Message).where(Message.game_id == game_id).order_by(Message.id)
@@ -306,3 +340,39 @@ class EventRepository:
         self._session.add(event)
         await self._session.flush()
         return event
+
+
+class LlmCallRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record(
+        self, result: LlmResult, user_id: int | None, game_id: uuid.UUID | None
+    ) -> LlmCall | None:
+        """A skipped call (an LLM limit was hit) cost nothing and isn't recorded."""
+        if result.skipped:
+            return None
+        call = LlmCall(
+            user_id=user_id,
+            game_id=game_id,
+            kind=result.kind,
+            model=result.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cache_write_tokens=result.cache_write_tokens,
+            stop_reason=result.stop_reason,
+            is_fallback=result.fallback,
+            error=result.error,
+            duration_ms=result.duration_ms,
+        )
+        self._session.add(call)
+        await self._session.flush()
+        return call
+
+    async def count_since(self, since: datetime, user_id: int | None = None) -> int:
+        query = select(func.count()).select_from(LlmCall).where(LlmCall.created_at >= since)
+        if user_id is not None:
+            query = query.where(LlmCall.user_id == user_id)
+        result = await self._session.execute(query)
+        return int(result.scalar_one())

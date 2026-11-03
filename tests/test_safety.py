@@ -5,6 +5,7 @@ import anthropic
 import pytest
 
 from src.llm import safety
+from src.llm.client import LlmResult
 
 CRISIS_PHRASES = [
     "я не хочу жить дальше",
@@ -84,9 +85,11 @@ async def test_classify_reads_the_model_verdict(monkeypatch):
     monkeypatch.undo()  # drop the conftest stub, exercise the real call
     reply = SimpleNamespace(content=[SimpleNamespace(type="text", text="RISK")])
     create = AsyncMock(return_value=reply)
-    monkeypatch.setattr(safety, "get_client", lambda: _fake_client(create))
+    monkeypatch.setattr("src.llm.client.get_client", lambda: _fake_client(create))
 
-    assert await safety.classify("мне кажется, всем будет легче без меня") is True
+    result = await safety.classify("мне кажется, всем будет легче без меня")
+    assert safety.is_risk(result) is True
+    assert result.kind == "classifier"
     sent = create.call_args.kwargs["messages"][0]["content"]
     assert "<message>" in sent
 
@@ -95,15 +98,18 @@ async def test_classify_fails_open_on_api_error(monkeypatch):
     monkeypatch.undo()
     request = SimpleNamespace(method="POST", url="https://api.anthropic.com")
     create = AsyncMock(side_effect=anthropic.APIConnectionError(request=request))  # type: ignore[arg-type]
-    monkeypatch.setattr(safety, "get_client", lambda: _fake_client(create))
+    monkeypatch.setattr("src.llm.client.get_client", lambda: _fake_client(create))
 
-    assert await safety.classify("что угодно") is False
+    result = await safety.classify("что угодно")
+    assert safety.is_risk(result) is False
+    assert result.fallback is True
 
 
 async def test_check_skips_classifier_when_dictionary_fires(monkeypatch):
-    classify = AsyncMock(return_value=True)
+    verdict = LlmResult(text="RISK", kind="classifier", model="stub")
+    classify = AsyncMock(return_value=verdict)
     monkeypatch.setattr(safety, "classify", classify)
 
-    assert await safety.check("хочу умереть") == "lexical"
+    assert await safety.check("хочу умереть") == ("lexical", None)
     classify.assert_not_awaited()
-    assert await safety.check("всем будет легче без меня") == "classifier"
+    assert await safety.check("всем будет легче без меня") == ("classifier", verdict)

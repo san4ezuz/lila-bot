@@ -1,12 +1,12 @@
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient, PaymentRequiredError
 from src.bot.states import GameStates
-from src.bot.utils import callback_message, current_game_id, esc, typing_indicator
+from src.bot.utils import callback_message, current_game_id, esc, track, typing_indicator
 from src.config import get_settings
 
 router = Router(name="start")
@@ -19,8 +19,12 @@ router = Router(name="start")
 _busy_telegram_ids: set[int] = set()
 
 
-@router.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext) -> None:
+@router.message(CommandStart())
+async def cmd_start(
+    message: Message, state: FSMContext, api: GameApiClient, command: CommandObject
+) -> None:
+    # `t.me/<bot>?start=<source>` arrives as "/start <source>" — the traffic source.
+    track(api, message.chat.id, "bot_start", source=command.args)
     await state.clear()
     await message.answer(
         texts.WELCOME_SHORT + texts.WELCOME_DISCLAIMER, reply_markup=keyboards.start_game_kb()
@@ -45,14 +49,16 @@ async def cmd_paysupport(message: Message) -> None:
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
+async def cmd_help(message: Message, api: GameApiClient) -> None:
+    track(api, message.chat.id, "about_opened", via="command")
     settings = get_settings()
     await message.answer(texts.about_game_text(settings.price_second_game_rub))
 
 
 @router.callback_query(F.data == "about_game")
-async def on_about_game(callback: CallbackQuery) -> None:
+async def on_about_game(callback: CallbackQuery, api: GameApiClient) -> None:
     await callback.answer()
+    track(api, callback.from_user.id, "about_opened", via="button")
     msg = callback_message(callback)
     if msg is None:
         return
@@ -100,6 +106,7 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
     if telegram_id in _busy_telegram_ids:
         return
     _busy_telegram_ids.add(telegram_id)
+    track(api, telegram_id, "start_clicked")
     try:
         # Ask once per user, right at the moment they actually mean to play, rather than on every
         # /start — gender isn't needed until there's text to address them with.
@@ -108,6 +115,7 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
         except ApiError:
             status = None
         if status is not None and status.gender is None:
+            track(api, telegram_id, "gender_asked")
             await msg.answer(texts.ASK_GENDER_TEXT, reply_markup=keyboards.gender_kb())
             return
 
@@ -129,6 +137,7 @@ async def on_set_gender(callback: CallbackQuery, state: FSMContext, api: GameApi
     _busy_telegram_ids.add(telegram_id)
     try:
         gender = (callback.data or "").split(":", 1)[1]
+        track(api, telegram_id, "gender_set", gender=gender)
         try:
             await api.set_gender(telegram_id, gender)
         except ApiError:

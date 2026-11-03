@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import html
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,8 +10,27 @@ from aiogram.enums import ChatAction
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from src.bot.api_client import GameApiClient
+from src.bot.api_client import ApiError, GameApiClient
 from src.bot.states import GameStates
+
+logger = logging.getLogger(__name__)
+
+_background: set[asyncio.Task] = set()
+
+
+def track(api: GameApiClient, telegram_id: int, name: str, **props: str | int | bool | None) -> None:
+    """Reports a funnel step (src/services/analytics_service.py) in the background: analytics
+    must neither slow down nor break the player's tap."""
+
+    async def _send() -> None:
+        try:
+            await api.track(telegram_id, name, **props)
+        except ApiError as exc:
+            logger.warning("funnel event %s not recorded: %s", name, exc)
+
+    task = asyncio.create_task(_send())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 def callback_message(callback: CallbackQuery) -> Message | None:

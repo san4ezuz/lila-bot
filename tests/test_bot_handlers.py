@@ -2,10 +2,12 @@
 being unreachable, a stale button) can't be reached through the API contract tests, and these are
 exactly the paths that used to leave a player facing silence."""
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiogram.filters import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -267,12 +269,23 @@ async def test_new_game_after_lost_state_still_asks_to_confirm(state):
 
 async def test_start_shows_the_disclaimer(state):
     message = _message("/start")
+    api = AsyncMock()
 
-    await start.cmd_start(message, state)
+    await start.cmd_start(message, state, api, CommandObject(command="start"))
 
     sent = _sent_text(message)
     assert "18+" in sent
     assert "не психотерапия" in sent
+
+
+async def test_start_reports_the_deep_link_source(state):
+    message = _message("/start tg_ads")
+    api = AsyncMock()
+
+    await start.cmd_start(message, state, api, CommandObject(command="start", args="tg_ads"))
+    await asyncio.sleep(0)  # the event is sent in the background
+
+    api.track.assert_awaited_once_with(CHAT_ID, "bot_start", source="tg_ads")
 
 
 async def test_flagged_intention_shows_help_and_waits_for_a_new_request(state):

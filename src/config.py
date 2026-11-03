@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     turn_limit: int | None = 60
     admin_telegram_ids_raw: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
 
+    # LLM limits (src/services/llm_limits.py); empty disables one. Past a limit the player gets
+    # the static fallback instead of a model reply. "Per day" is a rolling 24 hours. A game is
+    # ~37 calls (scripts/play_cli.py), so 200 per user is ~5 games a day.
+    llm_replies_per_cell: int | None = 3
+    llm_calls_per_user_per_day: int | None = 200
+    llm_calls_per_day: int | None = 5000
+
     @property
     def is_production(self) -> bool:
         return self.env == "prod" or bool(self.railway_environment_name)

@@ -6,6 +6,7 @@ from src.api.deps import get_db
 from src.api.main import app
 from src.config import get_settings
 from src.core.rules import ENTRY_GUARANTEE_ATTEMPTS
+from src.llm.client import LlmResult
 
 
 @pytest_asyncio.fixture
@@ -389,7 +390,7 @@ async def test_crisis_response_turns_on_crisis_mode(client, db_session, unique_t
 
 async def test_classifier_catches_what_the_dictionary_misses(client, db_session, unique_telegram_id, monkeypatch):
     async def _risky(text):
-        return True
+        return LlmResult(text="RISK", kind="classifier", model="stub")
 
     game_id = (await _start(client, unique_telegram_id))["game_id"]
     monkeypatch.setattr("src.llm.safety.classify", _risky)

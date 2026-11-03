@@ -14,10 +14,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.db.session import get_sessionmaker
+from src.logging_config import configure_logging
 from src.services.game_service import GameService
 
 
 async def main() -> None:
+    configure_logging()
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as session:
         service = GameService(session)

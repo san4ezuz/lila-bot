@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from src.core.board import get_default_board
+from src.db.models import Event
 from src.db.repositories import GameRepository, ReminderRepository, UserRepository
 from src.services.reminder_service import ReminderService
 
@@ -47,6 +49,10 @@ async def test_sends_stage_1_after_24h_and_records_stage(db_session, unique_tele
     reminders = ReminderRepository(db_session)
     reminder = await reminders.get_or_create(game.id)
     assert reminder.stage == 1
+    sent_events = await db_session.execute(
+        select(Event).where(Event.name == "reminder_sent", Event.game_id == game.id)
+    )
+    assert sent_events.scalar_one().props["stage"] == 1
 
 
 async def test_does_not_send_before_threshold(db_session, unique_telegram_id):

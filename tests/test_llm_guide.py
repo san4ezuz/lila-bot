@@ -11,7 +11,7 @@ import pytest
 
 import src.llm.guide as guide_module
 from src.core.board import get_default_board
-from src.llm.client import extract_text, supports_effort
+from src.llm.client import LlmResult, extract_text, supports_effort
 from src.llm.prompts import (
     build_deepen_context,
     build_interpret_cell_context,
@@ -47,11 +47,11 @@ async def test_call_falls_back_on_api_error(monkeypatch):
             create=AsyncMock(side_effect=anthropic.APIConnectionError(request=SimpleNamespace()))
         )
     )
-    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+    monkeypatch.setattr("src.llm.client.get_client", lambda: fake_client)
 
-    result = await _real_call("some context", max_tokens=100, effort="medium", fallback="FALLBACK TEXT")
+    result = await _real_call("some context", max_tokens=100, effort="medium", fallback="FALLBACK TEXT", kind="deepen")
 
-    assert result == "FALLBACK TEXT"
+    assert result.text == "FALLBACK TEXT"
 
 
 async def test_call_falls_back_on_missing_credentials(monkeypatch):
@@ -67,11 +67,11 @@ async def test_call_falls_back_on_missing_credentials(monkeypatch):
         )
 
     fake_client = SimpleNamespace(messages=SimpleNamespace(create=_raise_type_error))
-    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+    monkeypatch.setattr("src.llm.client.get_client", lambda: fake_client)
 
-    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="NO KEY FALLBACK")
+    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="NO KEY FALLBACK", kind="deepen")
 
-    assert result == "NO KEY FALLBACK"
+    assert result.text == "NO KEY FALLBACK"
 
 
 async def test_call_falls_back_on_timeout(monkeypatch):
@@ -81,12 +81,12 @@ async def test_call_falls_back_on_timeout(monkeypatch):
         await asyncio.sleep(10)
 
     fake_client = SimpleNamespace(messages=SimpleNamespace(create=_hangs))
-    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+    monkeypatch.setattr("src.llm.client.get_client", lambda: fake_client)
     monkeypatch.setattr("src.llm.guide._CALL_TIMEOUT_SECONDS", 0.05)
 
-    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="TIMEOUT FALLBACK")
+    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="TIMEOUT FALLBACK", kind="deepen")
 
-    assert result == "TIMEOUT FALLBACK"
+    assert result.text == "TIMEOUT FALLBACK"
 
 
 async def test_call_returns_extracted_text_on_success(monkeypatch):
@@ -96,11 +96,11 @@ async def test_call_returns_extracted_text_on_success(monkeypatch):
     fake_client = SimpleNamespace(
         messages=SimpleNamespace(create=AsyncMock(return_value=response))
     )
-    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+    monkeypatch.setattr("src.llm.client.get_client", lambda: fake_client)
 
-    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="unused")
+    result = await _real_call("ctx", max_tokens=100, effort="medium", fallback="unused", kind="deepen")
 
-    assert result == "a real reply"
+    assert result.text == "a real reply"
 
 
 async def test_call_falls_back_and_warns_when_thinking_used_up_max_tokens(monkeypatch, caplog):
@@ -112,11 +112,11 @@ async def test_call_falls_back_and_warns_when_thinking_used_up_max_tokens(monkey
     fake_client = SimpleNamespace(
         messages=SimpleNamespace(create=AsyncMock(return_value=response))
     )
-    monkeypatch.setattr("src.llm.guide.get_client", lambda: fake_client)
+    monkeypatch.setattr("src.llm.client.get_client", lambda: fake_client)
 
-    result = await _real_call("ctx", max_tokens=100, effort="low", fallback="FALLBACK")
+    result = await _real_call("ctx", max_tokens=100, effort="low", fallback="FALLBACK", kind="deepen")
 
-    assert result == "FALLBACK"
+    assert result.text == "FALLBACK"
     assert "stopped early: max_tokens" in caplog.text
 
 
@@ -138,12 +138,13 @@ async def test_interpret_cell_uses_real_call_and_board_data(monkeypatch):
     cell = board.get_cell(6)
     captured = {}
 
-    async def _capture(context, max_tokens, effort, fallback):
+    async def _capture(context, max_tokens, effort, fallback, kind, use_llm=True):
         captured["context"] = context
         captured["max_tokens"] = max_tokens
         captured["effort"] = effort
         captured["fallback"] = fallback
-        return "мокнутый ответ"
+        captured["kind"] = kind
+        return LlmResult(text="мокнутый ответ", kind=kind, model="stub")
 
     monkeypatch.setattr("src.llm.guide._call", _capture)
 
@@ -156,7 +157,8 @@ async def test_interpret_cell_uses_real_call_and_board_data(monkeypatch):
         recent_player_answers=[],
     )
 
-    assert result == "мокнутый ответ"
+    assert result.text == "мокнутый ответ"
+    assert captured["kind"] == "interpret_cell"
     assert cell.name in captured["context"]
     assert "разобраться с застоем" in captured["context"]
     assert captured["effort"] == "low"
@@ -166,16 +168,16 @@ async def test_interpret_cell_uses_real_call_and_board_data(monkeypatch):
 async def test_summarize_game_leaves_room_for_thinking(monkeypatch):
     captured = {}
 
-    async def _capture(context, max_tokens, effort, fallback):
+    async def _capture(context, max_tokens, effort, fallback, kind, use_llm=True):
         captured["effort"] = effort
         captured["max_tokens"] = max_tokens
-        return "резюме"
+        return LlmResult(text="резюме", kind=kind, model="stub")
 
     monkeypatch.setattr("src.llm.guide._call", _capture)
 
     result = await guide_module.summarize_game("тест", ["6 Заблуждение", "9 Чувственный план"])
 
-    assert result == "резюме"
+    assert result.text == "резюме"
     assert captured["effort"] == "low"
     assert captured["max_tokens"] == 3000
 

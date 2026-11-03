@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.config import get_settings
 from src.db.models import Base
+from src.llm.client import LlmResult, skipped_result
+from src.services import alerts
 
 
 @pytest.fixture(autouse=True)
@@ -15,14 +17,26 @@ def stub_llm_calls(monkeypatch):
     network-free by default — only tests/test_llm_guide.py cares about the real _call() plumbing
     and unsets this via monkeypatch.undo() / a local override where needed."""
 
-    async def _fake_call(context: str, max_tokens: int, effort: str, fallback: str) -> str:
-        return f"[stub effort={effort}] {fallback}"
+    async def _fake_call(
+        context: str, max_tokens: int, effort: str, fallback: str, kind: str, use_llm: bool = True
+    ) -> LlmResult:
+        if not use_llm:
+            return skipped_result(kind, fallback)  # type: ignore[arg-type]
+        return LlmResult(
+            text=f"[stub effort={effort}] {fallback}",
+            kind=kind,  # type: ignore[arg-type]
+            model="stub",
+            input_tokens=100,
+            output_tokens=20,
+            stop_reason="end_turn",
+        )
 
-    async def _fake_classify(text: str) -> bool:
-        return False
+    async def _fake_classify(text: str) -> LlmResult:
+        return LlmResult(text="SAFE", kind="classifier", model="stub", stop_reason="end_turn")
 
     monkeypatch.setattr("src.llm.guide._call", _fake_call)
     monkeypatch.setattr("src.llm.safety.classify", _fake_classify)
+    alerts.reset()
 
 
 async def _ensure_database(server_url: URL, name: str) -> None:

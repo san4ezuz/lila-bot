@@ -7,6 +7,7 @@ from src.api.deps import get_db, require_internal_token
 from src.api.schemas import AdminGrantRequest, AdminGrantResponse, WebhookAck
 from src.config import get_settings
 from src.db.repositories import WebhookInboxRepository
+from src.services.alerts import fire_alert
 from src.services.billing_service import (
     BillingService,
     DuplicateWebhookError,
@@ -69,6 +70,11 @@ async def tribute_webhook(
     except UnprocessableWebhookError as exc:
         logger.error("tribute webhook %s not applied: %s", entry.id, exc)
         await inbox.set_outcome(entry, "failed", str(exc))
+        fire_alert(
+            f"webhook_failed:{entry.id}",
+            f"Вебхук Tribute #{entry.id} не применён: {exc}. Проверь webhook_inbox — "
+            "возможно, оплату нужно выдать через /grant.",
+        )
 
     await db.commit()
     if confirm_to is not None:

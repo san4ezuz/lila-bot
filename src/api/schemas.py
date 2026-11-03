@@ -1,4 +1,5 @@
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -155,3 +156,56 @@ class ReminderAck(BaseModel):
 
 class SnoozeReminderRequest(BaseModel):
     hours: int = 72
+
+
+BotEventName = Literal[
+    "bot_start",
+    "about_opened",
+    "start_clicked",
+    "gender_asked",
+    "gender_set",
+    "reminder_clicked",
+]
+
+
+class TrackEventRequest(BaseModel):
+    """A UI step only the bot sees (src/services/analytics_service.py)."""
+
+    telegram_id: int
+    name: BotEventName
+    props: dict[str, str | int | bool | None] = {}
+
+
+class TrackEventAck(BaseModel):
+    ok: bool = True
+
+
+class StatsResponse(BaseModel):
+    """The admin funnel behind /stats, over the last `days` days."""
+
+    days: int
+    new_users: int
+    bot_starts: int
+    top_sources: list[tuple[str, int]]
+    about_opened: int
+    games_started_free: int
+    games_started_paid: int
+    intentions_set: int
+    entered: int
+    finished_enlightenment: int
+    finished_other: int
+    abandoned: int
+    paywall_shown: int
+    payments: int
+    revenue: int
+    refunds: int
+    admin_grants: int
+    safety_triggered: int
+    reminders_sent: int
+    reminders_clicked: int
+    llm_calls: int
+    llm_fallbacks: int
+    llm_limit_hits: int
+    tokens_in: int
+    tokens_out: int
+    tokens_cache_read: int

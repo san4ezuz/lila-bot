@@ -33,8 +33,11 @@ Lock-файл после правки зависимостей в `pyproject.tom
 - ID моделей Claude пишутся через дефисы: `claude-haiku-5-5`, не `claude-haiku-5.5` (иначе 404, и бот
   молча отдаёт шаблон «О чем для тебя эта клетка?» — это запасной текст `interpret_cell`).
 - У Haiku 5.5 и новее мышление расходует `max_tokens` — не опускать лимиты в `src/llm/guide.py`.
-- Фолбэк LLM ничего не показывает игроку: при подозрении ищи в логах api `guide LLM call failed` и
-  `stopped early`.
+- Фолбэк LLM ничего не показывает игроку: при подозрении смотри таблицу `llm_calls`
+  (`is_fallback`, `error`, `stop_reason`) и логи api `LLM call failed` / `stopped early`. Сбои шлют
+  алерт админам (`src/services/alerts.py`), если `ADMIN_TELEGRAM_IDS` задан на сервисе api.
+- Все вызовы модели идут через `src/llm/client.py::call_model` и возвращают `LlmResult`; сервис
+  пишет каждый в `llm_calls`. Новый вызов LLM — тоже через `call_model` и `_record_llm`.
 - Формат вебхука Tribute — по OpenAPI `tribute.tg/api/v1/openapi/en`; каждый вебхук лежит в
   `webhook_inbox` с причиной статуса. При сохранении адреса Tribute шлёт `{"test_event": ...}`.
 - `games.updated_at` обновляется на любой UPDATE — не писать служебные поля в `games` (см.

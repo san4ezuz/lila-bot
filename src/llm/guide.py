@@ -9,15 +9,8 @@ version history. On any API failure, each falls back to a short static message r
 losing the player's move (docs/PLAN.md §8.5).
 """
 
-import asyncio
-import logging
-from typing import Literal
-
-import anthropic
-
-from src.config import get_settings
 from src.core.board import Cell
-from src.llm.client import extract_text, get_client, supports_effort
+from src.llm.client import Effort, LlmKind, LlmResult, call_model, skipped_result
 from src.llm.prompts import (
     GUIDE_SYSTEM_PROMPT,
     build_deepen_context,
@@ -26,8 +19,6 @@ from src.llm.prompts import (
     build_summary_context,
 )
 
-logger = logging.getLogger(__name__)
-
 _CALL_TIMEOUT_SECONDS = 40
 
 # Hard ceilings, not length targets: reply length is set by the word limits in the system prompt.
@@ -35,8 +26,6 @@ _CALL_TIMEOUT_SECONDS = 40
 _MAX_TOKENS_SHORT = 1000
 _MAX_TOKENS_REPLY = 2000
 _MAX_TOKENS_SUMMARY = 3000
-
-Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 def _system_block() -> list[dict]:
@@ -56,44 +45,22 @@ async def _call(
     max_tokens: int,
     effort: Effort,
     fallback: str,
-) -> str:
-    client = get_client()
-    settings = get_settings()
-    kwargs: dict = {}
-    if supports_effort(settings.llm_model):
-        kwargs["output_config"] = {"effort": effort}
-    try:
-        # The dict literals below are the plain wire shapes from Anthropic's Messages API
-        # (docs/PLAN.md §8.2); typing them as the SDK's exact TypedDicts is more ceremony than
-        # value here, so this one call is exempted from strict overload matching.
-        message = await asyncio.wait_for(
-            client.messages.create(  # type: ignore[call-overload]
-                model=settings.llm_model,
-                max_tokens=max_tokens,
-                system=_system_block(),  # type: ignore[arg-type]
-                messages=[{"role": "user", "content": context}],
-                **kwargs,
-            ),
-            timeout=_CALL_TIMEOUT_SECONDS,
-        )
-    except (TimeoutError, anthropic.APIError) as exc:
-        logger.warning("guide LLM call failed, using fallback: %s", exc)
-        return fallback
-    except TypeError as exc:
-        # The SDK raises a plain TypeError (not an AnthropicError subclass) when it can't
-        # resolve credentials at request-build time — e.g. ANTHROPIC_API_KEY unset. Confirmed by
-        # a live smoke test against a real running server (not just mocks): without this, a
-        # misconfigured/missing key 500s the whole request instead of falling back, defeating
-        # the entire point of this function (docs/PLAN.md §8.5 — never lose the player's move).
-        logger.error("guide LLM call misconfigured (likely missing API key), using fallback: %s", exc)
-        return fallback
-
-    text = extract_text(message)
-    if message.stop_reason != "end_turn":
-        # Cut mid-sentence, or no text at all if thinking used up max_tokens. Silent otherwise —
-        # the player just sees a clipped reply or the fallback.
-        logger.warning("guide LLM call stopped early: %s, %d chars", message.stop_reason, len(text))
-    return text or fallback
+    kind: LlmKind,
+    use_llm: bool = True,
+) -> LlmResult:
+    """`use_llm=False` — an LLM limit was hit (src/services/llm_limits.py): answer with the
+    fallback without calling the model."""
+    if not use_llm:
+        return skipped_result(kind, fallback)
+    return await call_model(
+        kind=kind,
+        system=_system_block(),
+        content=context,
+        max_tokens=max_tokens,
+        effort=effort,
+        fallback=fallback,
+        timeout=_CALL_TIMEOUT_SECONDS,
+    )
 
 
 # --- static, procedural (no LLM call) -----------------------------------------------------
@@ -160,6 +127,15 @@ def turn_limit_message() -> str:
     )
 
 
+def cell_reply_limit_message() -> str:
+    """The per-cell reply limit is hit (src/services/llm_limits.py) — a nudge onward instead of
+    another model reply on the same cell."""
+    return (
+        "Ты уже много сказал(а) об этой клетке — пусть это побудет с тобой. "
+        "Бросай кубик, путь продолжается."
+    )
+
+
 def safety_referral_message(asks_intention: bool = False) -> str:
     """Fixed, vetted supportive text used INSTEAD of the LLM when the crisis screen
     (src/llm/safety.py) fires. A crisis disclosure is not the place to trust an unproven model
@@ -188,7 +164,8 @@ async def not_entered_message(
     attempt: int,
     guarantee_after: int,
     gender: str | None = None,
-) -> str:
+    use_llm: bool = True,
+) -> LlmResult:
     """`attempt` is how many entry rolls have been made so far (including this one); once it
     reaches `guarantee_after`, apply_roll() lets the player in regardless of the roll — see
     ENTRY_GUARANTEE_ATTEMPTS in src/core/rules.py. Rather than a mechanical "attempt N of M"
@@ -200,7 +177,9 @@ async def not_entered_message(
         intention, roll, near_guarantee=attempt >= guarantee_after - 1, gender=gender
     )
     fallback = f"Выпало {roll} — не шестёрка. Бросай ещё раз, дорога откроется."
-    return await _call(context, max_tokens=_MAX_TOKENS_SHORT, effort="low", fallback=fallback)
+    return await _call(
+        context, _MAX_TOKENS_SHORT, "low", fallback, kind="not_entered", use_llm=use_llm
+    )
 
 
 async def interpret_cell(
@@ -212,7 +191,8 @@ async def interpret_cell(
     recent_player_answers: list[str],
     skipped_cell: Cell | None = None,
     gender: str | None = None,
-) -> str:
+    use_llm: bool = True,
+) -> LlmResult:
     context = build_interpret_cell_context(
         intention=intention,
         cell_id=cell.id,
@@ -232,24 +212,35 @@ async def interpret_cell(
     fallback = (
         f"Фишка на клетке {cell.id}, «{cell.name}». {cell.theme} {cell.questions[0]}"
     )
-    return await _call(context, max_tokens=_MAX_TOKENS_REPLY, effort="low", fallback=fallback)
+    return await _call(
+        context, _MAX_TOKENS_REPLY, "low", fallback, kind="interpret_cell", use_llm=use_llm
+    )
 
 
 async def deepen(
-    intention: str | None, cell: Cell, player_text: str, gender: str | None = None
-) -> str:
+    intention: str | None,
+    cell: Cell,
+    player_text: str,
+    gender: str | None = None,
+    use_llm: bool = True,
+) -> LlmResult:
     context = build_deepen_context(intention, cell.name, player_text, gender=gender)
     fallback = "Слышу тебя. Идём дальше — бросай кубик, когда будешь готов."
-    return await _call(context, max_tokens=_MAX_TOKENS_REPLY, effort="low", fallback=fallback)
+    return await _call(context, _MAX_TOKENS_REPLY, "low", fallback, kind="deepen", use_llm=use_llm)
 
 
 async def summarize_game(
-    intention: str | None, visited: list[str], gender: str | None = None
-) -> str:
+    intention: str | None,
+    visited: list[str],
+    gender: str | None = None,
+    use_llm: bool = True,
+) -> LlmResult:
     context = build_summary_context(intention, visited, gender=gender)
     path = " → ".join(visited) if visited else "путь ещё не начался"
     fallback = (
         f"Вот путь, который ты прошёл за эту партию: {path}. "
         "Что из пройденного отзывается в тебе сильнее всего прямо сейчас?"
     )
-    return await _call(context, max_tokens=_MAX_TOKENS_SUMMARY, effort="low", fallback=fallback)
+    return await _call(
+        context, _MAX_TOKENS_SUMMARY, "low", fallback, kind="summary", use_llm=use_llm
+    )

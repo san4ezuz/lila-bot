@@ -159,7 +159,8 @@ class BillingService:
     async def grant_manual(self, telegram_id: int, count: int = 1) -> User:
         user = await self.users.get_or_create(telegram_id)
         await self.users.grant_paid_game(user, count)
-        await self.events.log("payment_succeeded", user.id, None, {"source": "manual_grant", "count": count})
+        # Not payment_succeeded: an admin grant is not revenue (see AnalyticsService.funnel).
+        await self.events.log("admin_grant", user.id, None, {"count": count})
         return user
 
 

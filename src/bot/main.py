@@ -13,8 +13,8 @@ from src.bot import keyboards, texts
 from src.bot.api_client import GameApiClient
 from src.bot.handlers import admin, game, start
 from src.config import get_settings
+from src.logging_config import configure_logging
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +31,7 @@ async def on_unhandled_error(event: ErrorEvent) -> bool:
 
 
 async def main() -> None:
+    configure_logging()
     settings = get_settings()
     if not settings.bot_token:
         raise RuntimeError("BOT_TOKEN is not set — see .env.example")

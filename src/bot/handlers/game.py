@@ -10,7 +10,7 @@ from src.bot.api_client import ApiError, GameApiClient
 from src.bot.cell_images import get_cell_image_path
 from src.bot.handlers.start import submit_intention
 from src.bot.states import GameStates
-from src.bot.utils import callback_message, current_game_id, esc, typing_indicator
+from src.bot.utils import callback_message, current_game_id, esc, track, typing_indicator
 
 router = Router(name="game")
 
@@ -218,6 +218,7 @@ async def on_continue_game(callback: CallbackQuery, state: FSMContext, api: Game
         return
 
     game_id = (callback.data or "").split(":", 1)[1]
+    track(api, callback.from_user.id, "reminder_clicked", action="continue", game_id=game_id)
     try:
         game_state = await api.get_game(game_id)
     except ApiError:
@@ -244,6 +245,7 @@ async def on_snooze_reminder(callback: CallbackQuery, api: GameApiClient) -> Non
         return
 
     game_id = (callback.data or "").split(":", 1)[1]
+    track(api, callback.from_user.id, "reminder_clicked", action="snooze", game_id=game_id)
     try:
         await api.snooze_reminder(game_id)
     except ApiError:
@@ -258,6 +260,7 @@ async def on_opt_out_reminders(callback: CallbackQuery, api: GameApiClient) -> N
     if msg is None:
         return
 
+    track(api, callback.from_user.id, "reminder_clicked", action="opt_out")
     try:
         await api.opt_out_reminders(callback.from_user.id)
     except ApiError:

@@ -9,17 +9,10 @@ The dictionary still needs expert review. Add phrases here together with a case 
 tests/test_safety.py — and a non-crisis phrase there too if the new pattern risks catching one.
 """
 
-import asyncio
-import logging
 import re
 from typing import Literal
 
-import anthropic
-
-from src.config import get_settings
-from src.llm.client import extract_text, get_client, supports_effort
-
-logger = logging.getLogger(__name__)
+from src.llm.client import LlmResult, call_model
 
 SafetySource = Literal["lexical", "classifier"]
 
@@ -89,38 +82,33 @@ _CLASSIFIER_PROMPT = """\
 Ответь ровно одним словом: RISK или SAFE."""
 
 
-async def classify(text: str) -> bool:
-    """Layer 2: asks the model whether the text signals acute danger. Fails open (False) on any
-    API error — layer 1 has already run, and a broken classifier must not break the game."""
-    settings = get_settings()
-    kwargs: dict = {}
-    if supports_effort(settings.llm_model):
-        kwargs["output_config"] = {"effort": "low"}
-    try:
-        message = await asyncio.wait_for(
-            get_client().messages.create(  # type: ignore[call-overload]
-                model=settings.llm_model,
-                max_tokens=_CLASSIFIER_MAX_TOKENS,
-                system=_CLASSIFIER_PROMPT,
-                messages=[{"role": "user", "content": f"<message>\n{text}\n</message>"}],
-                **kwargs,
-            ),
-            timeout=_CLASSIFIER_TIMEOUT_SECONDS,
-        )
-    except (TimeoutError, anthropic.APIError, TypeError) as exc:
-        logger.warning("safety classifier call failed, treating as safe: %s", exc)
-        return False
-    return parse_verdict(extract_text(message))
+async def classify(text: str) -> LlmResult:
+    """Layer 2: asks the model whether the text signals acute danger; read the answer with
+    is_risk(). Fails open — on any API error the result's text is "SAFE": layer 1 has already
+    run, and a broken classifier must not break the game."""
+    return await call_model(
+        kind="classifier",
+        system=_CLASSIFIER_PROMPT,
+        content=f"<message>\n{text}\n</message>",
+        max_tokens=_CLASSIFIER_MAX_TOKENS,
+        effort="low",
+        fallback="SAFE",
+        timeout=_CLASSIFIER_TIMEOUT_SECONDS,
+    )
 
 
 def parse_verdict(answer: str) -> bool:
     return "RISK" in answer.upper()
 
 
-async def check(text: str) -> SafetySource | None:
-    """Both layers in order; returns which one fired, or None."""
+def is_risk(result: LlmResult) -> bool:
+    return parse_verdict(result.text)
+
+
+async def check(text: str) -> tuple[SafetySource | None, LlmResult | None]:
+    """Both layers in order; returns which one fired (or None) and the classifier call, if one
+    was made, so the caller can record it."""
     if screen(text):
-        return "lexical"
-    if await classify(text):
-        return "classifier"
-    return None
+        return "lexical", None
+    result = await classify(text)
+    return ("classifier" if is_risk(result) else None), result
