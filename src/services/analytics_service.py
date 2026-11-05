@@ -2,7 +2,7 @@
 funnel behind /stats.
 
 The bot sends only UI steps the API can't see: /start with its deep-link source, the "Что это за
-игра?" screen, the gender step, taps on a reminder. Names are a closed list — see
+игра?" screen, the gender step, taps on a reminder, /invite and inline-mode shares. Names are a closed list — see
 src/api/schemas.py::BotEventName.
 """
 
@@ -122,6 +122,13 @@ class AnalyticsService:
             safety_triggered=await events("safety_triggered"),
             reminders_sent=await events("reminder_sent"),
             reminders_clicked=await events("reminder_clicked"),
+            referrals_joined=await events("referral_joined"),
+            referrals_rewarded=await events("referral_rewarded"),
+            gifts_created=await events("gift_created"),
+            gifts_redeemed=await events("gift_redeemed"),
+            promo_redeemed=await events("promo_redeemed"),
+            cards_created=await events("card_created"),
+            inline_shared=await events("inline_shared"),
             llm_calls=int(llm_calls),
             llm_fallbacks=int(llm_fallbacks),
             llm_limit_hits=await events("llm_limit_hit"),

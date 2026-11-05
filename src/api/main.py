@@ -5,7 +5,7 @@ import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from src.api.routers import analytics, game, health, payments
+from src.api.routers import analytics, game, growth, health, payments
 from src.config import get_settings
 from src.logging_config import configure_logging
 from src.services.alerts import fire_alert
@@ -27,6 +27,7 @@ app.include_router(game.router)
 app.include_router(payments.webhook_router)
 app.include_router(payments.admin_router)
 app.include_router(analytics.router)
+app.include_router(growth.router)
 
 
 @app.middleware("http")

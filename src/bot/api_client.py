@@ -8,14 +8,21 @@ import httpx
 
 from src.api.schemas import (
     AdminGrantResponse,
+    CardDataResponse,
+    CardFormat,
     FeedbackAck,
     FinishGameResponse,
     GameStateResponse,
+    GiftCreatedResponse,
+    InviteResponse,
+    PromoOut,
     RespondResponse,
     RollResponse,
     SetIntentionResponse,
     StartGameResponse,
+    StartLinkResponse,
     StatsResponse,
+    UserCardsResponse,
     UserStatusResponse,
 )
 from src.config import get_settings
@@ -140,3 +147,53 @@ class GameApiClient:
         await self._request(
             "POST", f"/game/{game_id}/reminders/snooze", json={"hours": hours}
         )
+
+    async def start_link(self, telegram_id: int, payload: str) -> StartLinkResponse:
+        response = await self._request(
+            "POST", f"/users/{telegram_id}/start-link", json={"payload": payload}
+        )
+        return StartLinkResponse.model_validate(response.json())
+
+    async def redeem_promo(self, telegram_id: int, code: str) -> StartLinkResponse:
+        response = await self._request("POST", f"/users/{telegram_id}/promo", json={"code": code})
+        return StartLinkResponse.model_validate(response.json())
+
+    async def invite(self, telegram_id: int) -> InviteResponse:
+        response = await self._request("POST", f"/users/{telegram_id}/invite")
+        return InviteResponse.model_validate(response.json())
+
+    async def create_gift(self, telegram_id: int) -> GiftCreatedResponse:
+        """ApiError 409 `no_credits` when there is nothing to give."""
+        response = await self._request("POST", f"/users/{telegram_id}/gifts")
+        return GiftCreatedResponse.model_validate(response.json())
+
+    async def card_data(self, game_id: str) -> CardDataResponse:
+        response = await self._request("GET", f"/game/{game_id}/card")
+        return CardDataResponse.model_validate(response.json())
+
+    async def save_card(
+        self, game_id: str, format: CardFormat, with_intention: bool, file_id: str
+    ) -> None:
+        await self._request(
+            "POST",
+            f"/game/{game_id}/card",
+            json={"format": format, "with_intention": with_intention, "file_id": file_id},
+        )
+
+    async def user_cards(self, telegram_id: int) -> UserCardsResponse:
+        response = await self._request("GET", f"/users/{telegram_id}/cards")
+        return UserCardsResponse.model_validate(response.json())
+
+    async def admin_create_promo(
+        self, code: str, credits: int, max_uses: int | None, note: str | None
+    ) -> PromoOut:
+        response = await self._request(
+            "POST",
+            "/admin/promo",
+            json={"code": code, "credits": credits, "max_uses": max_uses, "note": note},
+        )
+        return PromoOut.model_validate(response.json())
+
+    async def admin_promos(self) -> list[PromoOut]:
+        response = await self._request("GET", "/admin/promo")
+        return [PromoOut.model_validate(item) for item in response.json()]

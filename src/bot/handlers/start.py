@@ -6,6 +6,7 @@ from aiogram.types import CallbackQuery, Message
 
 from src.bot import keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient, PaymentRequiredError
+from src.bot.handlers.share import link_outcome_text
 from src.bot.states import GameStates
 from src.bot.utils import callback_message, current_game_id, esc, track, typing_indicator
 from src.config import get_settings
@@ -24,9 +25,18 @@ _busy_telegram_ids: set[int] = set()
 async def cmd_start(
     message: Message, state: FSMContext, api: GameApiClient, command: CommandObject
 ) -> None:
-    # `t.me/<bot>?start=<source>` arrives as "/start <source>" — the traffic source.
+    # `t.me/<bot>?start=<source>` arrives as "/start <source>" — the traffic source, and maybe
+    # an invite, a gift or a promo code (src/services/credit_service.py).
+    link_note = None
+    if command.args:
+        try:
+            link_note = link_outcome_text(await api.start_link(message.chat.id, command.args))
+        except ApiError:
+            pass  # the welcome matters more; the link can be opened again
     track(api, message.chat.id, "bot_start", source=command.args)
     await state.clear()
+    if link_note:
+        await message.answer(link_note)
     await message.answer(
         texts.WELCOME_SHORT + texts.WELCOME_DISCLAIMER, reply_markup=keyboards.start_game_kb()
     )

@@ -191,7 +191,7 @@ async def test_paywall_blocks_second_paid_game(client, unique_telegram_id):
 
 
 async def test_finish_marks_free_game_used_and_grants_access_after_payment(client, db_session, unique_telegram_id):
-    from src.db.repositories import UserRepository
+    from src.db.repositories import CreditRepository, UserRepository
 
     first = await client.post(
         "/game/start", json={"telegram_id": unique_telegram_id, "intention": "тест"}
@@ -205,7 +205,7 @@ async def test_finish_marks_free_game_used_and_grants_access_after_payment(clien
     user = await users.get_by_telegram_id(unique_telegram_id)
     assert user.has_free_game_used is True
 
-    await users.grant_paid_game(user, 1)
+    await CreditRepository(db_session).add(user.id, 1, "admin")
 
     second = await client.post("/game/start", json={"telegram_id": unique_telegram_id})
     assert second.status_code == 200

@@ -3,6 +3,7 @@ pulling in a full aiogram Dispatcher — see src/services/billing_service.py's o
 for why this lives outside the bot process. Shared by billing_service.py (payment confirmation)
 and reminder_service.py (abandoned-game nudges)."""
 
+import asyncio
 import logging
 
 import httpx
@@ -10,6 +11,8 @@ import httpx
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+_background: set[asyncio.Task] = set()
 
 
 async def send_message(telegram_id: int, text: str, reply_markup: dict | None = None) -> bool:
@@ -35,3 +38,12 @@ async def send_message(telegram_id: int, text: str, reply_markup: dict | None = 
         logger.warning("failed to notify user %s: %s", telegram_id, exc)
         return False
     return True
+
+
+def send_in_background(messages: list[tuple[int, str]]) -> None:
+    """For a side notification (a referral reward, an opened gift) that must not delay the
+    player's own response. Call after commit."""
+    for telegram_id, text in messages:
+        task = asyncio.create_task(send_message(telegram_id, text))
+        _background.add(task)
+        task.add_done_callback(_background.discard)

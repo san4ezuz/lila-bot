@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.models import Payment, User
 from src.db.repositories import EventRepository, PaymentRepository, UserRepository
 from src.services import notify
+from src.services.credit_service import CreditService
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class BillingService:
         self.users = UserRepository(session)
         self.payments = PaymentRepository(session)
         self.events = EventRepository(session)
+        self.credits = CreditService(session)
 
     async def process_tribute_payment(
         self,
@@ -133,7 +135,7 @@ class BillingService:
             currency=currency,
             raw_payload=raw_payload,
         )
-        await self.users.grant_paid_game(user, 1)
+        await self.credits.grant(user, "paid", ref=f"tribute:{external_id}")
         await self.events.log(
             "payment_succeeded", user.id, None, {"amount": amount, "currency": currency}
         )
@@ -151,17 +153,20 @@ class BillingService:
         payment.status = "refunded"
         await self.session.flush()
         user = await self.session.get(User, payment.user_id)
-        revoked = user is not None and await self.users.revoke_paid_game(user)
+        revoked = user is not None and await self.credits.take_back(
+            user, "refund", ref=f"tribute:{external_id}"
+        )
         await self.events.log(
             "payment_refunded", payment.user_id, None, {"external_id": external_id, "revoked": revoked}
         )
 
-    async def grant_manual(self, telegram_id: int, count: int = 1) -> User:
+    async def grant_manual(self, telegram_id: int, count: int = 1) -> int:
+        """Returns the player's balance after the grant."""
         user = await self.users.get_or_create(telegram_id)
-        await self.users.grant_paid_game(user, count)
+        await self.credits.grant(user, "admin", count=count)
         # Not payment_succeeded: an admin grant is not revenue (see AnalyticsService.funnel).
         await self.events.log("admin_grant", user.id, None, {"count": count})
-        return user
+        return await self.credits.balance(user)
 
 
 PAYMENT_CONFIRMED_TEXT = "Оплата прошла — можно начинать следующую партию. Жми /start, когда захочешь."

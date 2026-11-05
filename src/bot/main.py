@@ -11,7 +11,7 @@ from aiogram.types import BotCommand, ErrorEvent, MenuButtonCommands, Message
 
 from src.bot import keyboards, texts
 from src.bot.api_client import GameApiClient
-from src.bot.handlers import admin, game, start
+from src.bot.handlers import admin, game, share, start
 from src.config import get_settings
 from src.logging_config import configure_logging
 
@@ -40,6 +40,8 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(start.router)
     dp.include_router(admin.router)
+    # Before `game`: its catch-all text handlers would take /invite, /gift and /promo as replies.
+    dp.include_router(share.router)
     dp.include_router(game.router)
     dp.errors.register(on_unhandled_error)
 
@@ -55,12 +57,21 @@ async def main() -> None:
             BotCommand(command="start", description="🎲 Играть"),
             BotCommand(command="newgame", description="🆕 Новая игра"),
             BotCommand(command="help", description="ℹ️ Что это за игра?"),
+            BotCommand(command="invite", description="🤝 Пригласить друга"),
+            BotCommand(command="gift", description="🎁 Подарить партию"),
+            BotCommand(command="promo", description="Ввести промокод"),
             BotCommand(command="paysupport", description="Вопросы по оплате"),
             BotCommand(command="terms", description="Условия"),
             BotCommand(command="privacy", description="Конфиденциальность"),
         ]
     )
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    # The profile a newcomer sees before Start. Kept here, not only in BotFather, so it's versioned.
+    try:
+        await bot.set_my_short_description(short_description=texts.BOT_SHORT_DESCRIPTION)
+        await bot.set_my_description(description=texts.BOT_DESCRIPTION)
+    except TelegramAPIError as exc:
+        logger.warning("bot description not updated: %s", exc)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)

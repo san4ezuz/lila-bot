@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.bot import texts
@@ -78,3 +80,50 @@ def confirm_new_game_kb() -> InlineKeyboardMarkup:
         ]
     )
 
+
+
+def card_offer_kb(game_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=texts.BTN_CARD_STORY, callback_data=f"card:story:{game_id}:0")],
+            [InlineKeyboardButton(text=texts.BTN_CARD_SQUARE, callback_data=f"card:square:{game_id}:0")],
+        ]
+    )
+
+
+def card_kb(game_id: str, format: str, with_intention: bool, has_intention: bool) -> InlineKeyboardMarkup:
+    """Under a sent card: the other format, the request on or off, and sending it to a chat
+    through inline mode (`@bot` — the player's cards come up there)."""
+    other = "square" if format == "story" else "story"
+    other_label = texts.BTN_CARD_SQUARE if format == "story" else texts.BTN_CARD_STORY
+    rows = [[InlineKeyboardButton(text=texts.BTN_SEND_TO_FRIEND, switch_inline_query="")]]
+    if has_intention:
+        label = texts.BTN_CARD_REMOVE_INTENTION if with_intention else texts.BTN_CARD_ADD_INTENTION
+        flag = 0 if with_intention else 1
+        rows.append(
+            [InlineKeyboardButton(text=label, callback_data=f"card:{format}:{game_id}:{flag}")]
+        )
+    rows.append(
+        [InlineKeyboardButton(text=other_label, callback_data=f"card:{other}:{game_id}:{int(with_intention)}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def share_link_kb(link: str, text: str) -> InlineKeyboardMarkup:
+    """Telegram's own share sheet: the player picks a chat, the link goes with `text`."""
+    url = f"https://t.me/share/url?url={quote(link, safe='')}&text={quote(text, safe='')}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_SHARE_LINK, url=url)]]
+    )
+
+
+def create_gift_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_CREATE_GIFT, callback_data="gift:create")]]
+    )
+
+
+def play_kb(link: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_PLAY, url=link)]]
+    )

@@ -5,9 +5,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardMarkup, Message
 
 from src.api.schemas import CellOut
-from src.bot import keyboards, texts
+from src.bot import cell_images, keyboards, texts
 from src.bot.api_client import ApiError, GameApiClient
-from src.bot.cell_images import get_cell_image_path
 from src.bot.handlers.start import submit_intention
 from src.bot.states import GameStates
 from src.bot.utils import callback_message, current_game_id, esc, track, typing_indicator
@@ -25,18 +24,37 @@ async def _send_cell_message(
 ) -> None:
     """Sends `body` as a plain text message, or — if data/cell_images/{cell_id}.* exists — as a
     photo with `body` as its caption (see src/bot/cell_images.py). Falls back to a plain message
-    for any cell without art; most cells have none, this is additive, not a redesign."""
-    image_path = get_cell_image_path(cell_id) if cell_id is not None else None
-    if image_path is None:
+    for any cell without art."""
+    photo = cell_images.cell_photo(cell_id) if cell_id is not None else None
+    if cell_id is None or photo is None:
         await target.answer(body, reply_markup=reply_markup)
         return
 
-    photo = FSInputFile(image_path)
-    if len(body) <= _PHOTO_CAPTION_LIMIT:
-        await target.answer_photo(photo, caption=body, reply_markup=reply_markup)
-    else:
-        await target.answer_photo(photo)
+    caption_fits = len(body) <= _PHOTO_CAPTION_LIMIT
+    try:
+        sent = await _answer_photo(target, photo, body, reply_markup, caption_fits)
+    except TelegramBadRequest:
+        # A cached file_id Telegram no longer accepts — upload the file again, once.
+        if not cell_images.forget_file_id(cell_id):
+            raise
+        photo = cell_images.cell_photo(cell_id)
+        assert photo is not None
+        sent = await _answer_photo(target, photo, body, reply_markup, caption_fits)
+    cell_images.remember_file_id(cell_id, sent)
+    if not caption_fits:
         await target.answer(body, reply_markup=reply_markup)
+
+
+async def _answer_photo(
+    target: Message,
+    photo: str | FSInputFile,
+    body: str,
+    reply_markup: InlineKeyboardMarkup | None,
+    caption_fits: bool,
+) -> Message:
+    if caption_fits:
+        return await target.answer_photo(photo, caption=body, reply_markup=reply_markup)
+    return await target.answer_photo(photo)
 
 # Games currently mid-roll, in this process — a lock against the exact failure mode a user
 # reported: the LLM call behind a roll takes a few seconds, nothing in the UI signals that
@@ -69,6 +87,7 @@ async def _send_summary(msg: Message, state: FSMContext, api: GameApiClient, gam
             return
 
     await msg.answer(esc(finish.summary) + texts.FINISHED_SUFFIX)
+    await msg.answer(texts.CARD_OFFER, reply_markup=keyboards.card_offer_kb(game_id))
     # FINISHED_SUFFIX ends with the one-word feedback question — the next text message in
     # this chat is the answer to that, not a reply to a cell (see on_feedback below).
     await state.set_state(GameStates.waiting_feedback)

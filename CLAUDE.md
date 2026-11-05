@@ -52,6 +52,11 @@ Lock-файл после правки зависимостей в `pyproject.tom
 - Правка промпта или контекста → прогон `scripts/eval_prompts.py` и запись в `docs/PROMPTS.md`.
   Не вставлять в промпт примеры запрещённых форм («готов(а)»): модель их воспроизводит.
 - Статичные тексты для игрока — без рода (тест `test_static_texts_need_no_gender`).
+- Партии игрока — только через `credit_ledger` (`src/services/credit_service.py`), счётчика в
+  `users` больше нет. Новое начисление — с `ref`, тогда повтор не начислит второй раз.
+- Новый арт клеток → `python scripts/compress_cell_images.py` (Telegram всё равно пережимает).
+- Inline-режим и `inline_shared` работают, только если включены в BotFather (`/setinline`,
+  `/setinlinefeedback`).
 - На этой машине Windows и TLS-перехват: внутри Docker pip не достаёт PyPI, это не ошибка проекта.
 
 ## Прод

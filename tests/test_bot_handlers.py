@@ -102,7 +102,7 @@ def _sent_text(message: MagicMock) -> str:
 
 @pytest.fixture(autouse=True)
 def _no_cell_images(monkeypatch):
-    monkeypatch.setattr("src.bot.handlers.game.get_cell_image_path", lambda cell_id: None)
+    monkeypatch.setattr("src.bot.cell_images.cell_photo", lambda cell_id: None)
 
 
 async def test_roll_recovers_game_after_fsm_state_was_lost(state):
@@ -200,7 +200,12 @@ async def test_finish_failure_keeps_the_cell_and_offers_summary_retry(state):
     retry = _callback(f"retry_summary:{GAME_ID}")
     await game.on_retry_summary(retry, state, api)
 
-    assert _sent_text(retry.message).startswith("итог")
+    summary, card_offer = retry.message.answer.await_args_list
+    assert summary.args[0].startswith("итог")
+    assert card_offer.args[0] == texts.CARD_OFFER
+    assert card_offer.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == (
+        f"card:story:{GAME_ID}:0"
+    )
     assert await state.get_state() == GameStates.waiting_feedback.state
 
 

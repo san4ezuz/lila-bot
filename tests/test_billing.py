@@ -10,7 +10,7 @@ from src.api.deps import get_db
 from src.api.main import app
 from src.config import get_settings
 from src.db.models import WebhookInbox
-from src.db.repositories import UserRepository
+from src.db.repositories import CreditRepository, UserRepository
 from src.services.billing_service import (
     BillingService,
     DuplicateWebhookError,
@@ -112,9 +112,8 @@ async def test_process_tribute_payment_grants_paid_game(db_session, unique_teleg
     )
     assert payment.status == "paid"
 
-    users = UserRepository(db_session)
-    user = await users.get_by_telegram_id(unique_telegram_id)
-    assert user.paid_games_available == 1
+    user = await UserRepository(db_session).get_by_telegram_id(unique_telegram_id)
+    assert await CreditRepository(db_session).balance(user.id) == 1
 
 
 async def test_duplicate_webhook_does_not_double_grant(db_session, unique_telegram_id):
@@ -127,15 +126,13 @@ async def test_duplicate_webhook_does_not_double_grant(db_session, unique_telegr
             unique_telegram_id, "pay-dup", 299.0, "RUB", {"raw": True}
         )
 
-    users = UserRepository(db_session)
-    user = await users.get_by_telegram_id(unique_telegram_id)
-    assert user.paid_games_available == 1  # not 2
+    user = await UserRepository(db_session).get_by_telegram_id(unique_telegram_id)
+    assert await CreditRepository(db_session).balance(user.id) == 1  # not 2
 
 
 async def test_grant_manual(db_session, unique_telegram_id):
     service = BillingService(db_session)
-    user = await service.grant_manual(unique_telegram_id, count=2)
-    assert user.paid_games_available == 2
+    assert await service.grant_manual(unique_telegram_id, count=2) == 2
 
 
 # --- API-level tests (real FastAPI app via ASGITransport) --------------------------------
@@ -245,8 +242,8 @@ async def test_refund_takes_back_unused_game(http_client, db_session, unique_tel
 
 async def test_refund_does_not_push_balance_negative(http_client, db_session, unique_telegram_id):
     await _post_webhook(http_client, _purchase(unique_telegram_id, unique_telegram_id))
-    users = UserRepository(db_session)
-    await users.consume_paid_game(await users.get_by_telegram_id(unique_telegram_id))
+    user = await UserRepository(db_session).get_by_telegram_id(unique_telegram_id)
+    await CreditRepository(db_session).add(user.id, -1, "game")
 
     refund = _purchase(unique_telegram_id, unique_telegram_id, name="digital_product_refunded")
     await _post_webhook(http_client, refund)

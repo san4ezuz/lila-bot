@@ -165,6 +165,8 @@ BotEventName = Literal[
     "gender_asked",
     "gender_set",
     "reminder_clicked",
+    "inline_shared",
+    "invite_opened",
 ]
 
 
@@ -203,6 +205,13 @@ class StatsResponse(BaseModel):
     safety_triggered: int
     reminders_sent: int
     reminders_clicked: int
+    referrals_joined: int
+    referrals_rewarded: int
+    gifts_created: int
+    gifts_redeemed: int
+    promo_redeemed: int
+    cards_created: int
+    inline_shared: int
     llm_calls: int
     llm_fallbacks: int
     llm_limit_hits: int
@@ -217,3 +226,93 @@ class ReactionRequest(BaseModel):
 
 class ReactionAck(BaseModel):
     ok: bool = True
+
+
+# --- credits, invites, share cards (docs/ROADMAP.md, этап 4) -----------------------------------
+
+
+class StartLinkRequest(BaseModel):
+    payload: str
+
+
+class StartLinkResponse(BaseModel):
+    """What a `/start <payload>` or a typed promo code did. `kind` None — a plain traffic source."""
+
+    kind: Literal["referral", "gift", "promo"] | None
+    outcome: (
+        Literal["granted", "invalid", "own", "not_new", "already_used", "exhausted", "expired"]
+        | None
+    ) = None
+    credits: int = 0
+
+
+class PromoRedeemRequest(BaseModel):
+    code: str
+
+
+class InviteResponse(BaseModel):
+    ref_code: str
+    balance: int
+
+
+class GiftCreatedResponse(BaseModel):
+    code: str
+    balance: int
+
+
+class PromoCreateRequest(BaseModel):
+    code: str
+    credits: int = 1
+    max_uses: int | None = None
+    note: str | None = None
+
+
+class PromoOut(BaseModel):
+    code: str
+    credits: int
+    max_uses: int | None
+    uses: int
+    note: str | None
+    is_active: bool
+
+
+class CardJump(BaseModel):
+    from_cell: int
+    to_cell: int
+    kind: Literal["arrow", "snake"]
+
+
+class CardDataResponse(BaseModel):
+    """Everything the bot needs to draw a finished game's share card. `intention` is only printed
+    when the player asks for it — a request can be intimate."""
+
+    game_id: uuid.UUID
+    path: list[int]
+    jumps: list[CardJump]
+    key_cell: CellOut
+    insight: str
+    question: str | None
+    intention: str | None
+    turns: int
+    reached_finish: bool
+    ref_code: str
+
+
+CardFormat = Literal["story", "square"]
+
+
+class SaveCardRequest(BaseModel):
+    format: CardFormat
+    with_intention: bool = False
+    file_id: str
+
+
+class ShareCardOut(BaseModel):
+    file_id: str
+    format: CardFormat
+    with_intention: bool
+
+
+class UserCardsResponse(BaseModel):
+    cards: list[ShareCardOut]
+    ref_code: str

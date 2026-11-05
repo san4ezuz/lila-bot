@@ -1,5 +1,5 @@
 """Admin commands: /grant — manual fallback for a Tribute payment whose webhook never arrived
-(docs/PLAN.md §11.2), and /stats — the funnel. Restricted to ADMIN_TELEGRAM_IDS — the bot is the
+(docs/PLAN.md §11.2), /stats — the funnel, /promo_new and /promos — promo codes. Restricted to ADMIN_TELEGRAM_IDS — the bot is the
 sole enforcer of *who* may call these; the API only checks the bot<->API trust boundary
 (X-Internal-Token), see src/api/routers/payments.py.
 """
@@ -63,6 +63,59 @@ async def cmd_stats(message: Message, api: GameApiClient) -> None:
     await message.answer(stats_text(day, week))
 
 
+_PROMO_NEW_USAGE = (
+    "Использование: /promo_new КОД [партий=1] [активаций] [заметка]\n"
+    "Например: /promo_new MARINA 1 100 блог Марины"
+)
+
+
+@router.message(Command("promo_new"))
+async def cmd_promo_new(message: Message, command: CommandObject, api: GameApiClient) -> None:
+    if not _is_admin(message):
+        return
+    parts = (command.args or "").split(maxsplit=3)
+    try:
+        code = parts[0]
+        credits = int(parts[1]) if len(parts) > 1 else 1
+        max_uses = int(parts[2]) if len(parts) > 2 else None
+    except (IndexError, ValueError):
+        await message.answer(_PROMO_NEW_USAGE)
+        return
+    note = parts[3] if len(parts) > 3 else None
+    try:
+        promo = await api.admin_create_promo(code, credits, max_uses, note)
+    except ApiError as exc:
+        await message.answer(f"Ошибка: {exc.message}")
+        return
+    username = (await message.bot.me()).username if message.bot else ""
+    await message.answer(
+        f"Промокод {promo.code}: {promo.credits} парт., активаций "
+        f"{promo.max_uses if promo.max_uses is not None else 'без лимита'}.\n"
+        f"Ссылка: https://t.me/{username}?start=promo_{promo.code}\n"
+        f"Или командой: /promo {promo.code}"
+    )
+
+
+@router.message(Command("promos"))
+async def cmd_promos(message: Message, api: GameApiClient) -> None:
+    if not _is_admin(message):
+        return
+    try:
+        promos = await api.admin_promos()
+    except ApiError as exc:
+        await message.answer(f"Ошибка: {exc.message}")
+        return
+    if not promos:
+        await message.answer("Промокодов пока нет. Создать: /promo_new")
+        return
+    lines = [
+        f"{p.code} — {p.uses}/{p.max_uses if p.max_uses is not None else '∞'}, "
+        f"{p.credits} парт.{' · ' + p.note if p.note else ''}"
+        for p in promos
+    ]
+    await message.answer("\n".join(["<b>Промокоды</b> (активации)", *lines]))
+
+
 def stats_text(day: StatsResponse, week: StatsResponse) -> str:
     def row(label: str, field: str) -> str:
         return f"{label}: {getattr(day, field)} / {getattr(week, field)}"
@@ -90,6 +143,15 @@ def stats_text(day: StatsResponse, week: StatsResponse) -> str:
             row("Срабатывания safety", "safety_triggered"),
             row("Напоминаний отправлено", "reminders_sent"),
             row("Нажатий на напоминания", "reminders_clicked"),
+            "",
+            "<b>Рост</b> (сутки / 7 дней)",
+            row("Пришли по приглашению", "referrals_joined"),
+            row("Награды пригласившим", "referrals_rewarded"),
+            row("Подарков создано", "gifts_created"),
+            row("Подарков открыто", "gifts_redeemed"),
+            row("Промокодов активировано", "promo_redeemed"),
+            row("Карточек сделано", "cards_created"),
+            row("Отправлено через inline", "inline_shared"),
             "",
             f"Источники за 7 дней: {sources}",
             "",

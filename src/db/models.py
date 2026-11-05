@@ -31,8 +31,9 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(255))
     first_name: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # The first game is free and is not a credit: it is used up when that game finishes. Every
+    # later game spends one credit from `credit_ledger`.
     has_free_game_used: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    paid_games_available: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     reminders_opt_out: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     # 'male' | 'female' | 'skip' (explicitly declined) | None (never asked) — asked once per
     # user, not per game, so correct address forms carry across a player's whole history.
@@ -43,6 +44,11 @@ class User(Base):
     crisis_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Traffic source from the first `/start <source>` deep link; set once, never overwritten.
     source: Mapped[str | None] = mapped_column(String(64))
+    # The player's own invite code for `t.me/<bot>?start=ref_<code>` — random, so a shared link
+    # doesn't carry the Telegram ID. Created on first use.
+    ref_code: Mapped[str | None] = mapped_column(String(16), unique=True)
+    # Who invited this player (src/services/credit_service.py); set once.
+    referred_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"))
 
 
 class Game(Base):
@@ -181,6 +187,83 @@ class Event(Base):
     game_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     name: Mapped[str] = mapped_column(String(50), nullable=False)
     props: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CreditEntry(Base):
+    """One change to a player's game credits; the balance is the sum of `delta`. Replaces the old
+    `users.paid_games_available` counter, so every credit has a reason (src/services/credit_service.py
+    lists them) and a `ref` back to what produced it: a purchase, a promo code, a gift, a friend.
+
+    The partial unique index makes every grant with a `ref` happen at most once — a redelivered
+    webhook, a second tap on a gift link or a promo code typed twice can't add a second credit."""
+
+    __tablename__ = "credit_ledger"
+    __table_args__ = (
+        Index("ix_credit_ledger_user", "user_id"),
+        Index(
+            "uq_credit_ledger_grant",
+            "user_id",
+            "reason",
+            "ref",
+            unique=True,
+            postgresql_where=text("delta > 0 AND ref IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(20), nullable=False)
+    ref: Mapped[str | None] = mapped_column(String(128))
+    game_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Gift(Base):
+    """A game one player gives another: the giver's credit is spent when the link is created and
+    becomes the recipient's when they open `t.me/<bot>?start=gift_<code>`."""
+
+    __tablename__ = "gifts"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    from_user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    redeemed_by: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("users.id"))
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PromoCode(Base):
+    """A code for bloggers and facilitators. Uses are the `credit_ledger` rows with
+    reason='promo' and ref=code — one per player."""
+
+    __tablename__ = "promo_codes"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)  # stored upper-case
+    credits: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    max_uses: Mapped[int | None] = mapped_column(Integer)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text)  # whose code it is
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ShareCard(Base):
+    """A finished game's share card the bot has uploaded to Telegram. Only the file_id is kept,
+    not the image: inline mode (`@bot` in any chat) offers the player's cards by it."""
+
+    __tablename__ = "share_cards"
+    __table_args__ = (
+        UniqueConstraint("game_id", "format", "with_intention", name="uq_share_cards_variant"),
+        Index("ix_share_cards_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    game_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
+    format: Mapped[str] = mapped_column(String(8), nullable=False)  # 'story' (9:16) | 'square' (1:1)
+    with_intention: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    file_id: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

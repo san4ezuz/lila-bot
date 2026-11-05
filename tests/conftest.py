@@ -39,6 +39,20 @@ def stub_llm_calls(monkeypatch):
     alerts.reset()
 
 
+@pytest.fixture(autouse=True)
+def sent_notifications(monkeypatch) -> list[tuple[int, str]]:
+    """Telegram messages the API would send to players (src/services/notify.py), captured
+    instead of sent."""
+    sent: list[tuple[int, str]] = []
+
+    async def _fake_send(telegram_id: int, text: str, reply_markup: dict | None = None) -> bool:
+        sent.append((telegram_id, text))
+        return True
+
+    monkeypatch.setattr("src.services.notify.send_message", _fake_send)
+    return sent
+
+
 async def _ensure_database(server_url: URL, name: str) -> None:
     engine = create_async_engine(server_url, isolation_level="AUTOCOMMIT")
     async with engine.connect() as connection:

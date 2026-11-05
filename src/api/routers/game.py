@@ -199,9 +199,7 @@ async def feedback(
 
 @router.get("/users/{telegram_id}/status", response_model=UserStatusResponse)
 async def user_status(telegram_id: int, db: AsyncSession = Depends(get_db)) -> UserStatusResponse:
-    service = GameService(db)
-    status = await service.get_user_status(telegram_id)
-    return UserStatusResponse(**status)
+    return await GameService(db).get_user_status(telegram_id)
 
 
 @router.post("/users/{telegram_id}/gender", response_model=SetGenderAck)

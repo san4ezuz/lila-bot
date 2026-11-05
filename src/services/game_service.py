@@ -6,6 +6,7 @@ from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.schemas import UserStatusResponse
 from src.config import get_settings
 from src.core.board import ENTRY_CELL, Board, get_default_board
 from src.core.dice import ENTRY_GUARANTEE_ATTEMPTS, roll_entry_die
@@ -23,7 +24,9 @@ from src.db.repositories import (
 from src.llm import guide, safety
 from src.llm.client import LlmResult, skipped_result
 from src.llm.gender import infer_gender
+from src.services import notify
 from src.services.alerts import note_llm_result
+from src.services.credit_service import CreditService
 from src.services.crisis import in_crisis_mode
 from src.services.llm_limits import LlmLimits
 
@@ -81,6 +84,7 @@ class GameService:
         self.events = EventRepository(session)
         self.llm_calls = LlmCallRepository(session)
         self.limits = LlmLimits(session)
+        self.credits = CreditService(session)
         self.board: Board = get_default_board()
         self.settings = get_settings()
         self.rng = random.Random()
@@ -88,6 +92,9 @@ class GameService:
     async def start_game(self, telegram_id: int, intention: str | None) -> tuple[Game, str]:
         # Only the Telegram id is stored — no name or username (see texts.about_game_text).
         user = await self.users.get_or_create(telegram_id)
+        # Held until commit: a second tap waits here, then finds this game instead of starting
+        # another one and spending a second credit.
+        await self.users.lock(user)
 
         active = await self.games.get_active_for_user(user.id)
         if active is not None:
@@ -96,8 +103,7 @@ class GameService:
 
         if not user.has_free_game_used:
             is_paid = False
-        elif user.paid_games_available > 0:
-            await self.users.consume_paid_game(user)
+        elif await self.credits.balance(user) > 0:
             is_paid = True
         elif in_crisis_mode(user):
             await self.events.log("paywall_suppressed", user.id, None, {"reason": "crisis"})
@@ -118,6 +124,8 @@ class GameService:
             )
 
         game = await self.games.create(user.id, self.board.version, is_paid)
+        if is_paid:
+            await self.credits.spend_for_game(user, game.id)
         await self.events.log("game_started", user.id, game.id, {"is_paid": is_paid})
 
         if intention:
@@ -182,9 +190,9 @@ class GameService:
             game.id,
             {"turn": result.turn, "position": result.final_position, "transition": result.transition},
         )
-        if game.status == "finished":
-            await self._on_finished(game)
+        notifications = await self._on_finished(game) if game.status == "finished" else []
         await self.session.commit()
+        notify.send_in_background(notifications)
 
         guide_message = await self._roll_guide_message(game, result)
         await self.messages.create(game.id, "guide", guide_message, move_id=move.id)
@@ -468,7 +476,9 @@ class GameService:
             game.finished_at = datetime.now(UTC)
             game.finish_reason = game.finish_reason or "player_ended"
             await self.session.flush()
-            await self._on_finished(game)
+            notifications = await self._on_finished(game)
+            await self.session.commit()
+            notify.send_in_background(notifications)
 
         stats = {"turns": game.turn, "finish_reason": game.finish_reason}
         await self.events.log("game_finished", game.user_id, game.id, stats)
@@ -493,12 +503,13 @@ class GameService:
             {"reaction": reaction, "position": game.position, "turn": game.turn},
         )
 
-    async def _on_finished(self, game: Game) -> None:
-        if game.is_paid:
-            return
-        user = await self.session.get(User, game.user_id)
-        if user is not None and not user.has_free_game_used:
-            await self.users.mark_free_game_used(user)
+    async def _on_finished(self, game: Game) -> list[tuple[int, str]]:
+        """Returns messages to send once this is committed (an inviter's reward)."""
+        if not game.is_paid:
+            user = await self.session.get(User, game.user_id)
+            if user is not None and not user.has_free_game_used:
+                await self.users.mark_free_game_used(user)
+        return await self.credits.on_game_finished(game)
 
     async def get_game(self, game_id: uuid.UUID) -> Game:
         game = await self.games.get(game_id)
@@ -540,24 +551,20 @@ class GameService:
             )
         return len(stale)
 
-    async def get_user_status(self, telegram_id: int) -> dict:
+    async def get_user_status(self, telegram_id: int) -> UserStatusResponse:
         user = await self.users.get_by_telegram_id(telegram_id)
         if user is None:
-            return {
-                "has_free_game_used": False,
-                "paid_games_available": 0,
-                "active_game_id": None,
-                "active_game_status": None,
-                "gender": None,
-            }
+            return UserStatusResponse(
+                has_free_game_used=False, paid_games_available=0, active_game_id=None
+            )
         active = await self.games.get_active_for_user(user.id)
-        return {
-            "has_free_game_used": user.has_free_game_used,
-            "paid_games_available": user.paid_games_available,
-            "active_game_id": active.id if active else None,
-            "active_game_status": active.status if active else None,
-            "gender": user.gender,
-        }
+        return UserStatusResponse(
+            has_free_game_used=user.has_free_game_used,
+            paid_games_available=await self.credits.balance(user),
+            active_game_id=active.id if active else None,
+            active_game_status=active.status if active else None,
+            gender=user.gender,
+        )
 
     async def set_gender(self, telegram_id: int, gender: str) -> None:
         user = await self.users.get_or_create(telegram_id)

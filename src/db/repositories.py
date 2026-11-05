@@ -2,17 +2,22 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.models import GameState, MoveResult
 from src.db.models import (
+    CreditEntry,
     Event,
     Game,
+    Gift,
     LlmCall,
     Message,
     Move,
     Payment,
+    PromoCode,
     Reminder,
+    ShareCard,
     User,
     WebhookInbox,
 )
@@ -42,25 +47,6 @@ class UserRepository:
         user.has_free_game_used = True
         await self._session.flush()
 
-    async def grant_paid_game(self, user: User, count: int = 1) -> None:
-        user.paid_games_available += count
-        await self._session.flush()
-
-    async def revoke_paid_game(self, user: User) -> bool:
-        """Takes back one unused paid game. Returns False if none is left to take back — the
-        game may already have been started, and a refund must not push the balance negative."""
-        if user.paid_games_available <= 0:
-            return False
-        user.paid_games_available -= 1
-        await self._session.flush()
-        return True
-
-    async def consume_paid_game(self, user: User) -> None:
-        if user.paid_games_available <= 0:
-            raise ValueError("user has no paid games available")
-        user.paid_games_available -= 1
-        await self._session.flush()
-
     async def set_reminders_opt_out(self, user: User, opted_out: bool = True) -> None:
         user.reminders_opt_out = opted_out
         await self._session.flush()
@@ -78,6 +64,23 @@ class UserRepository:
         if user.source is None:
             user.source = source
             await self._session.flush()
+
+    async def lock(self, user: User) -> None:
+        """Row lock until commit: serializes everything that reads the credit balance and then
+        spends from it, so two racing taps can't spend one credit twice."""
+        await self._session.refresh(user, with_for_update=True)
+
+    async def get_by_ref_code(self, ref_code: str) -> User | None:
+        result = await self._session.execute(select(User).where(User.ref_code == ref_code))
+        return result.scalar_one_or_none()
+
+    async def set_ref_code(self, user: User, ref_code: str) -> None:
+        user.ref_code = ref_code
+        await self._session.flush()
+
+    async def set_referred_by(self, user: User, inviter_id: int) -> None:
+        user.referred_by = inviter_id
+        await self._session.flush()
 
 
 class GameRepository:
@@ -99,6 +102,21 @@ class GameRepository:
             select(Game)
             .where(Game.user_id == user_id, Game.status.in_(("setup", "active", "abandoned")))
             .order_by(Game.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def count_for_user(self, user_id: int) -> int:
+        result = await self._session.execute(
+            select(func.count()).select_from(Game).where(Game.user_id == user_id)
+        )
+        return int(result.scalar_one())
+
+    async def last_finished_for_user(self, user_id: int) -> Game | None:
+        result = await self._session.execute(
+            select(Game)
+            .where(Game.user_id == user_id, Game.status == "finished")
+            .order_by(Game.finished_at.desc().nulls_last())
             .limit(1)
         )
         return result.scalar_one_or_none()
@@ -407,3 +425,141 @@ class LlmCallRepository:
             query = query.where(LlmCall.user_id == user_id)
         result = await self._session.execute(query)
         return int(result.scalar_one())
+
+
+class CreditRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def balance(self, user_id: int) -> int:
+        result = await self._session.execute(
+            select(func.coalesce(func.sum(CreditEntry.delta), 0)).where(
+                CreditEntry.user_id == user_id
+            )
+        )
+        return int(result.scalar_one())
+
+    async def add(
+        self,
+        user_id: int,
+        delta: int,
+        reason: str,
+        ref: str | None = None,
+        game_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Returns False when a grant with this `ref` was already made (uq_credit_ledger_grant)."""
+        statement = (
+            insert(CreditEntry)
+            .values(user_id=user_id, delta=delta, reason=reason, ref=ref, game_id=game_id)
+            .on_conflict_do_nothing(
+                index_elements=["user_id", "reason", "ref"],
+                index_where=(CreditEntry.delta > 0) & CreditEntry.ref.is_not(None),
+            )
+            .returning(CreditEntry.id)
+        )
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none() is not None
+
+    async def count_grants(self, reason: str, ref: str, user_id: int | None = None) -> int:
+        query = select(func.count()).where(
+            CreditEntry.reason == reason, CreditEntry.ref == ref, CreditEntry.delta > 0
+        )
+        if user_id is not None:
+            query = query.where(CreditEntry.user_id == user_id)
+        result = await self._session.execute(query)
+        return int(result.scalar_one())
+
+
+class GiftRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_for_update(self, code: str) -> Gift | None:
+        result = await self._session.execute(
+            select(Gift).where(Gift.code == code).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def create(self, code: str, from_user_id: int) -> Gift:
+        gift = Gift(code=code, from_user_id=from_user_id)
+        self._session.add(gift)
+        await self._session.flush()
+        return gift
+
+    async def redeem(self, gift: Gift, user_id: int) -> None:
+        gift.redeemed_by = user_id
+        gift.redeemed_at = datetime.now(UTC)
+        await self._session.flush()
+
+
+class PromoCodeRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get_for_update(self, code: str) -> PromoCode | None:
+        result = await self._session.execute(
+            select(PromoCode).where(PromoCode.code == code).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert(
+        self, code: str, credits: int, max_uses: int | None, note: str | None
+    ) -> PromoCode:
+        promo = await self._session.get(PromoCode, code)
+        if promo is None:
+            promo = PromoCode(code=code)
+            self._session.add(promo)
+        promo.credits = credits
+        promo.max_uses = max_uses
+        promo.note = note
+        promo.is_active = True
+        await self._session.flush()
+        return promo
+
+    async def list_with_uses(self) -> list[tuple[PromoCode, int]]:
+        uses = (
+            select(func.count())
+            .where(
+                CreditEntry.reason == "promo",
+                CreditEntry.ref == PromoCode.code,
+                CreditEntry.delta > 0,
+            )
+            .correlate(PromoCode)
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select(PromoCode, uses).order_by(PromoCode.created_at.desc())
+        )
+        return [(promo, int(count)) for promo, count in result.all()]
+
+
+class ShareCardRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save(
+        self, game_id: uuid.UUID, user_id: int, format: str, with_intention: bool, file_id: str
+    ) -> None:
+        statement = (
+            insert(ShareCard)
+            .values(
+                game_id=game_id,
+                user_id=user_id,
+                format=format,
+                with_intention=with_intention,
+                file_id=file_id,
+            )
+            .on_conflict_do_update(
+                constraint="uq_share_cards_variant", set_={"file_id": file_id}
+            )
+        )
+        await self._session.execute(statement)
+
+    async def recent_for_user(self, user_id: int, limit: int) -> list[ShareCard]:
+        result = await self._session.execute(
+            select(ShareCard)
+            .where(ShareCard.user_id == user_id)
+            .order_by(ShareCard.created_at.desc(), ShareCard.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())

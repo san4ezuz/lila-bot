@@ -1,6 +1,7 @@
 from src.core.board import get_default_board
 from src.core.rules import apply_roll, create_initial_state
 from src.db.repositories import (
+    CreditRepository,
     EventRepository,
     GameRepository,
     MessageRepository,
@@ -20,21 +21,33 @@ async def test_get_or_create_user_is_idempotent(db_session, unique_telegram_id):
     assert user1.telegram_id == unique_telegram_id
 
 
-async def test_free_game_flag_and_paid_game_balance(db_session, unique_telegram_id):
+async def test_free_game_flag_and_credit_balance(db_session, unique_telegram_id):
     repo = UserRepository(db_session)
+    credits = CreditRepository(db_session)
     user = await repo.get_or_create(unique_telegram_id)
 
     assert user.has_free_game_used is False
-    assert user.paid_games_available == 0
+    assert await credits.balance(user.id) == 0
 
     await repo.mark_free_game_used(user)
     assert user.has_free_game_used is True
 
-    await repo.grant_paid_game(user, count=2)
-    assert user.paid_games_available == 2
+    assert await credits.add(user.id, 2, "admin") is True
+    assert await credits.balance(user.id) == 2
 
-    await repo.consume_paid_game(user)
-    assert user.paid_games_available == 1
+    await credits.add(user.id, -1, "game")
+    assert await credits.balance(user.id) == 1
+
+
+async def test_a_grant_with_a_ref_is_made_once(db_session, unique_telegram_id):
+    user = await UserRepository(db_session).get_or_create(unique_telegram_id)
+    credits = CreditRepository(db_session)
+
+    assert await credits.add(user.id, 1, "paid", ref="tribute:1") is True
+    assert await credits.add(user.id, 1, "paid", ref="tribute:1") is False
+    # Spends with the same ref are not grants: a refund of that purchase still goes through.
+    assert await credits.add(user.id, -1, "refund", ref="tribute:1") is True
+    assert await credits.balance(user.id) == 0
 
 
 async def test_set_gender_persists_choice(db_session, unique_telegram_id):

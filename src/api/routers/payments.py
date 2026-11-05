@@ -89,5 +89,5 @@ async def admin_grant(body: AdminGrantRequest, db: AsyncSession = Depends(get_db
     the /grant command to docs/PLAN.md's admin telegram IDs); this endpoint only enforces the
     same bot<->API trust boundary as every other route (X-Internal-Token)."""
     service = BillingService(db)
-    user = await service.grant_manual(body.telegram_id, body.count)
-    return AdminGrantResponse(telegram_id=body.telegram_id, paid_games_available=user.paid_games_available)
+    balance = await service.grant_manual(body.telegram_id, body.count)
+    return AdminGrantResponse(telegram_id=body.telegram_id, paid_games_available=balance)
