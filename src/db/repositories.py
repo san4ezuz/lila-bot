@@ -228,6 +228,31 @@ class MessageRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_since_last_move(self, game_id: uuid.UUID) -> list[Message]:
+        """The conversation on the current cell: the guide's message about the last move and
+        everything after it, oldest first."""
+        last_move_message = (
+            select(func.coalesce(func.max(Message.id), 0))
+            .where(Message.game_id == game_id, Message.move_id.is_not(None))
+            .scalar_subquery()
+        )
+        result = await self._session.execute(
+            select(Message)
+            .where(Message.game_id == game_id, Message.id >= last_move_message)
+            .order_by(Message.id)
+        )
+        return list(result.scalars().all())
+
+    async def recent_player_texts(self, game_id: uuid.UUID, limit: int) -> list[str]:
+        """The player's last `limit` messages, oldest first."""
+        result = await self._session.execute(
+            select(Message.content)
+            .where(Message.game_id == game_id, Message.role == "player")
+            .order_by(Message.id.desc())
+            .limit(limit)
+        )
+        return list(reversed(result.scalars().all()))
+
     async def count_player_since_last_move(self, game_id: uuid.UUID) -> int:
         """Player messages since the guide's last message about a move — i.e. replies on the
         current cell. Feeds the per-cell LLM limit."""
@@ -340,6 +365,12 @@ class EventRepository:
         self._session.add(event)
         await self._session.flush()
         return event
+
+    async def list_for_game(self, game_id: uuid.UUID, name: str) -> list[Event]:
+        result = await self._session.execute(
+            select(Event).where(Event.game_id == game_id, Event.name == name).order_by(Event.id)
+        )
+        return list(result.scalars().all())
 
 
 class LlmCallRepository:

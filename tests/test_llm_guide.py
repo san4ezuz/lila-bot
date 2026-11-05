@@ -6,10 +6,13 @@ live ANTHROPIC_API_KEY — see docs/PLAN.md §8.5."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import re
+
 import anthropic
 import pytest
 
 import src.llm.guide as guide_module
+from src.bot import texts
 from src.core.board import get_default_board
 from src.llm.client import LlmResult, extract_text, supports_effort
 from src.llm.prompts import (
@@ -256,6 +259,28 @@ def test_six_extra_roll_note_mentions_the_bonus_roll():
     assert "ещё один бросок" in guide_module.six_extra_roll_note()
 
 
-def test_intention_ack_message_uses_gendered_verb():
-    assert "пришла" in guide_module.intention_ack_message("тест", gender="female")
-    assert "пришёл" in guide_module.intention_ack_message("тест", gender="male")
+def test_static_texts_need_no_gender():
+    """No gender question any more (docs/ROADMAP.md, этап 3): static texts must read right for
+    anyone, without «пришёл(-а)» patches or a guessed form."""
+    board = get_default_board()
+    samples = [
+        guide_module.intro_message(),
+        guide_module.intention_ack_message("тест"),
+        guide_module.first_try_entry_message("тест"),
+        guide_module.first_try_entry_message(None),
+        guide_module.forced_entry_message(),
+        guide_module.blocked_overshoot_message(board.get_cell(66)),
+        guide_module.turn_limit_message(),
+        guide_module.cell_reply_limit_message(),
+        guide_module.safety_referral_message(),
+        guide_module.safety_referral_message(asks_intention=True),
+        *[value for name, value in vars(texts).items() if name.isupper() and isinstance(value, str)],
+        texts.about_game_text(299),
+    ]
+    gendered = re.compile(r"\((?:-?а|-?ась)\)|\b(?:пришёл|прошёл|сказал|готов|остановился|успел)\b")
+    offenders = [sample for sample in samples if gendered.search(sample)]
+    assert offenders == []
+
+
+def test_first_try_entry_keeps_a_known_gender():
+    assert "вошла в игру" in guide_module.first_try_entry_message("тест", gender="female")

@@ -11,7 +11,7 @@ from src.core.board import ENTRY_CELL, Board, get_default_board
 from src.core.dice import ENTRY_GUARANTEE_ATTEMPTS, roll_entry_die
 from src.core.models import GameState, MoveEvent, MoveResult, TransitionType
 from src.core.rules import ASSIST_FROM_TURN, apply_roll, shortest_path_rolls
-from src.db.models import Game, Move, User
+from src.db.models import Event, Game, Move, User
 from src.db.repositories import (
     EventRepository,
     GameRepository,
@@ -22,6 +22,7 @@ from src.db.repositories import (
 )
 from src.llm import guide, safety
 from src.llm.client import LlmResult, skipped_result
+from src.llm.gender import infer_gender
 from src.services.alerts import note_llm_result
 from src.services.crisis import in_crisis_mode
 from src.services.llm_limits import LlmLimits
@@ -39,6 +40,13 @@ class GameNotActiveError(Exception):
 # reminders keep nudging the player up to 7 days (docs/UX_ITERATION_1.md §2), and a returning
 # player must be able to pick it back up. "Resumable" = the player can still act on it.
 _RESUMABLE_STATUSES = ("active", "abandoned")
+
+# Moves that put the piece on a cell of its own — a burnt (overshoot) roll leaves it where it was.
+_LANDING_EVENTS = ("entered", "moved", "finished")
+_TRANSITION_ARROWS = {"snake": "—змея→", "arrow": "—стрела→"}
+
+# How much of the player's own writing the summary sees.
+_SUMMARY_ANSWERS = 8
 
 # What the client should do when the crisis screen fires: show a supportive text with help
 # contacts instead of the usual reply.
@@ -135,6 +143,7 @@ class GameService:
 
         await self.games.set_intention(game, intention)
         await self.events.log("intention_set", game.user_id, game.id)
+        await self._learn_gender(game.user_id, intention)
 
         # Entry requires rolling a 6 (docs/RULES.md §2) — the player's next roll is their first
         # entry attempt, so nothing moves yet here.
@@ -260,8 +269,12 @@ class GameService:
             # entered (later/forced) / moved / finished all land on a new cell — worth an LLM
             # interpretation. On a snake/arrow transition, also hand over the source cell the
             # player was swept past without ever landing on, so the guide can name it.
-            visited = await self._visited_names(game.id)
-            recent_answers = await self._recent_player_answers(game.id)
+            moves = await self.moves.list_for_game(game.id)
+            visited = self._visited_names(moves)
+            landings_here = sum(
+                1 for m in moves if m.event in _LANDING_EVENTS and m.to_pos == cell.id
+            )
+            recent_answers = await self.messages.recent_player_texts(game.id, limit=2)
             skipped_cell = (
                 self.board.get_cell(result.raw_position)
                 if result.transition is not None and result.raw_position is not None
@@ -279,6 +292,7 @@ class GameService:
                 recent_player_answers=recent_answers,
                 gender=gender,
                 use_llm=use_llm,
+                revisit=landings_here > 1,
             )
             await self._record_llm(game, cell_reply)
             cell_message = cell_reply.text
@@ -302,21 +316,43 @@ class GameService:
             await self.llm_calls.record(result, game.user_id, game.id)
             note_llm_result(result)
 
+    async def _learn_gender(self, user_id: int, text: str) -> None:
+        """Nobody is asked their gender any more: it is read from their own words, once, and only
+        if they never chose one themselves (an old answer, including 'skip', stands)."""
+        user = await self.session.get(User, user_id)
+        if user is None or user.gender is not None:
+            return
+        gender = infer_gender(text)
+        if gender is not None:
+            await self.users.set_gender(user, gender)
+            await self.events.log("gender_inferred", user_id, None, {"gender": gender})
+
     async def _user_gender(self, user_id: int) -> str | None:
         user = await self.session.get(User, user_id)
         return user.gender if user else None
 
-    async def _visited_names(self, game_id: uuid.UUID) -> list[str]:
-        moves = await self.moves.list_for_game(game_id)
+    def _cell_label(self, cell_id: int) -> str:
+        return f"{cell_id} {self.board.get_cell(cell_id).name}"
+
+    def _visited_names(self, moves: list[Move]) -> list[str]:
         return [
-            f"{m.to_pos} {self.board.get_cell(m.to_pos).name}"
+            self._cell_label(m.to_pos)
             for m in moves
-            if m.to_pos is not None
+            if m.event in _LANDING_EVENTS and m.to_pos is not None
         ]
 
-    async def _recent_player_answers(self, game_id: uuid.UUID) -> list[str]:
-        messages = await self.messages.list_for_game(game_id)
-        return [m.content for m in messages if m.role == "player"][-2:]
+    def _summary_path(self, moves: list[Move]) -> list[str]:
+        """The path with its turns: a snake or arrow shows where it started."""
+        path = []
+        for m in moves:
+            if m.event not in _LANDING_EVENTS or m.to_pos is None:
+                continue
+            if m.transition is not None and m.raw_pos is not None:
+                arrow = _TRANSITION_ARROWS.get(m.transition, "→")
+                path.append(f"{self._cell_label(m.raw_pos)} {arrow} {self._cell_label(m.to_pos)}")
+            else:
+                path.append(self._cell_label(m.to_pos))
+        return path
 
     async def skip_response(self, game: Game) -> None:
         if game.status not in _RESUMABLE_STATUSES:
@@ -337,6 +373,7 @@ class GameService:
         await self.events.log(
             "player_responded", game.user_id, game.id, {"char_len": len(text)}
         )
+        await self._learn_gender(game.user_id, text)
 
         source: safety.SafetySource | None = "lexical" if safety.screen(text) else None
         guide_message = ""
@@ -373,8 +410,13 @@ class GameService:
             return skipped_result("deepen", guide.cell_reply_limit_message())
         cell = self.board.get_cell(game.position)
         gender = await self._user_gender(game.user_id)
+        # The player's message was saved just before this call — it is `text`, not history.
+        conversation = await self.messages.list_since_last_move(game.id)
+        dialogue = [(m.role, m.content) for m in conversation[:-1]][-6:]
         await self.session.commit()  # no idle-in-transaction connection during the LLM call
-        return await guide.deepen(game.intention, cell, text, gender, use_llm=use_llm)
+        return await guide.deepen(
+            game.intention, cell, text, gender, use_llm=use_llm, dialogue=dialogue
+        )
 
     async def _on_safety_trigger(self, game: Game, source: str, where: str) -> None:
         user = await self.session.get(User, game.user_id)
@@ -400,11 +442,23 @@ class GameService:
         if game.status == "finished" and game.summary:
             return game.summary, {"turns": game.turn, "finish_reason": game.finish_reason}
 
-        visited = await self._visited_names(game.id)
+        path = self._summary_path(await self.moves.list_for_game(game.id))
+        answers = await self.messages.recent_player_texts(game.id, limit=_SUMMARY_ANSWERS)
+        reactions = await self.events.list_for_game(game.id, "cell_reaction")
+        resonated = self._reaction_cells(reactions, "yes")
+        not_resonated = self._reaction_cells(reactions, "no")
         gender = await self._user_gender(game.user_id)
         use_llm = await self.limits.allows_call(game.user_id, game.id)
         await self.session.commit()
-        reply = await guide.summarize_game(game.intention, visited, gender, use_llm=use_llm)
+        reply = await guide.summarize_game(
+            game.intention,
+            path,
+            gender,
+            use_llm=use_llm,
+            player_answers=answers,
+            resonated=resonated,
+            not_resonated=not_resonated,
+        )
         await self._record_llm(game, reply)
         summary = reply.text
         await self.games.set_summary(game, summary)
@@ -419,6 +473,25 @@ class GameService:
         stats = {"turns": game.turn, "finish_reason": game.finish_reason}
         await self.events.log("game_finished", game.user_id, game.id, stats)
         return summary, stats
+
+    def _reaction_cells(self, reactions: list[Event], reaction: str) -> list[str]:
+        cells = {
+            e.props["position"]
+            for e in reactions
+            if e.props.get("reaction") == reaction and e.props.get("position") is not None
+        }
+        return [self._cell_label(cell_id) for cell_id in sorted(cells)]
+
+    async def record_reaction(self, game: Game, reaction: str) -> None:
+        """A quick «откликается / не про меня» on the current cell — the summary reads it."""
+        if game.status not in _RESUMABLE_STATUSES:
+            raise GameNotActiveError("game is not active")
+        await self.events.log(
+            "cell_reaction",
+            game.user_id,
+            game.id,
+            {"reaction": reaction, "position": game.position, "turn": game.turn},
+        )
 
     async def _on_finished(self, game: Game) -> None:
         if game.is_paid:

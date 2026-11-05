@@ -13,6 +13,8 @@ from src.api.schemas import (
     GameStateResponse,
     MoveOut,
     PaymentRequiredResponse,
+    ReactionAck,
+    ReactionRequest,
     ReminderAck,
     RespondRequest,
     RespondResponse,
@@ -111,6 +113,16 @@ async def skip_response(game_id: uuid.UUID, db: AsyncSession = Depends(get_db)) 
     game = await service.get_game(game_id)
     await service.skip_response(game)
     return SkipAck()
+
+
+@router.post("/game/{game_id}/reaction", response_model=ReactionAck)
+async def reaction(
+    game_id: uuid.UUID, body: ReactionRequest, db: AsyncSession = Depends(get_db)
+) -> ReactionAck:
+    service = GameService(db)
+    game = await service.get_game(game_id)
+    await service.record_reaction(game, body.reaction)
+    return ReactionAck()
 
 
 @router.post("/game/{game_id}/respond", response_model=RespondResponse)

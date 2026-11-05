@@ -76,6 +76,18 @@ async def _send_summary(msg: Message, state: FSMContext, api: GameApiClient, gam
 
 @router.callback_query(F.data.startswith("roll"))
 async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
+    await _roll(callback, state, api)
+
+
+@router.callback_query(F.data == "next")
+async def on_next(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
+    """"Дальше" under a cell: the player didn't answer — log it and roll in the same tap."""
+    await _roll(callback, state, api, skipped=True)
+
+
+async def _roll(
+    callback: CallbackQuery, state: FSMContext, api: GameApiClient, skipped: bool = False
+) -> None:
     msg = callback_message(callback)
     if msg is None:
         await callback.answer()
@@ -113,6 +125,11 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
 
     _rolling_games.add(game_id)
     try:
+        if skipped:
+            try:
+                await api.skip(game_id)
+            except ApiError:
+                pass  # analytics only — the roll below has its own error path
         async with typing_indicator(callback.bot, msg.chat.id):
             try:
                 result = await api.roll(game_id, idempotency_key=idempotency_key)
@@ -154,7 +171,7 @@ async def on_roll(callback: CallbackQuery, state: FSMContext, api: GameApiClient
     # A burnt roll landed nowhere new — there's no cell to reflect on, only the next roll.
     if result.cell is not None and result.event != "blocked_overshoot":
         await _send_cell_message(
-            msg, cell_id, f"{body}\n\n{texts.ASK_FOR_TEXT_RESPONSE}", reply_markup=keyboards.response_kb()
+            msg, cell_id, f"{body}\n\n{texts.ASK_FOR_TEXT_RESPONSE}", reply_markup=keyboards.cell_kb()
         )
     else:
         await _send_cell_message(msg, cell_id, body, reply_markup=keyboards.roll_kb())
@@ -169,6 +186,25 @@ async def on_retry_summary(callback: CallbackQuery, state: FSMContext, api: Game
     await _send_summary(msg, state, api, (callback.data or "").split(":", 1)[1])
 
 
+@router.callback_query(F.data.startswith("react:"))
+async def on_reaction(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
+    msg = callback_message(callback)
+    reaction = (callback.data or "").split(":", 1)[1]
+    try:
+        game_id = await current_game_id(state, api, callback.from_user.id)
+        if game_id is not None and msg is not None:
+            await api.react(game_id, reaction)
+    except ApiError:
+        pass  # a lost reaction is not worth an error message
+    await callback.answer(texts.REACTION_ACK)
+    if msg is not None:
+        try:
+            await msg.edit_reply_markup(reply_markup=keyboards.cell_kb(with_reactions=False))
+        except TelegramBadRequest:
+            pass
+
+
+# Old cell messages still carry "Пропустить".
 @router.callback_query(F.data == "skip_response")
 async def on_skip_response(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
     await callback.answer()

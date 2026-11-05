@@ -164,7 +164,7 @@ class BillingService:
         return user
 
 
-PAYMENT_CONFIRMED_TEXT = "Оплата прошла — можно начинать следующую партию. Жми /start, когда будешь готов."
+PAYMENT_CONFIRMED_TEXT = "Оплата прошла — можно начинать следующую партию. Жми /start, когда захочешь."
 
 # Re-exported for callers/tests already importing notify_user from this module — the actual raw
 # Bot API call now lives in src/services/notify.py, shared with reminder_service.py.

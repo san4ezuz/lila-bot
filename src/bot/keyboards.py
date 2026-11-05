@@ -29,10 +29,27 @@ def retry_summary_kb(game_id: str) -> InlineKeyboardMarkup:
     )
 
 
-def response_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=texts.BTN_SKIP, callback_data="skip_response")]]
-    )
+def cell_kb(with_reactions: bool = True) -> InlineKeyboardMarkup:
+    """Under a cell reading: one tap rolls on (no separate "skip" step), and an optional quick
+    reaction for players who don't want to write. The reaction tap leaves only "Дальше"."""
+    rows = [[InlineKeyboardButton(text=texts.BTN_NEXT, callback_data="next")]]
+    if with_reactions:
+        rows.append(
+            [
+                InlineKeyboardButton(text=texts.BTN_REACT_YES, callback_data="react:yes"),
+                InlineKeyboardButton(text=texts.BTN_REACT_NO, callback_data="react:no"),
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def intention_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=label, callback_data=f"intention:{key}")]
+        for key, label, _ in texts.INTENTION_PRESETS
+    ]
+    rows.append([InlineKeyboardButton(text=texts.BTN_INTENTION_OWN, callback_data="intention:own")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def gender_kb() -> InlineKeyboardMarkup:

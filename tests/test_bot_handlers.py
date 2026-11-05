@@ -20,6 +20,7 @@ from src.api.schemas import (
     RespondResponse,
     RollResponse,
     SetIntentionResponse,
+    StartGameResponse,
     UserStatusResponse,
 )
 from src.bot import texts
@@ -353,3 +354,97 @@ async def test_paysupport_shows_the_telegram_id(state):
     await start.cmd_paysupport(message)
 
     assert str(CHAT_ID) in _sent_text(message)
+
+
+# --- этап 3: first two minutes ----------------------------------------------------------------
+
+
+def _started(status: str = "setup") -> StartGameResponse:
+    return StartGameResponse(
+        game_id=GAME_ID, status=status, position=None, in_play=False, turn=0, guide_message="интро"
+    )
+
+
+async def test_start_goes_straight_to_the_request_buttons(state):
+    api = AsyncMock()
+    api.start_game.return_value = _started()
+    callback = _callback("start_game")
+
+    await start.on_start_game(callback, state, api)
+
+    api.get_user_status.assert_not_awaited()  # no gender question on the way in
+    markup = callback.message.answer.await_args.kwargs["reply_markup"]
+    assert [row[0].callback_data for row in markup.inline_keyboard][-1] == "intention:own"
+    assert await state.get_state() == GameStates.waiting_intention.state
+
+
+async def test_request_preset_is_submitted_as_a_request(state):
+    await state.set_state(GameStates.waiting_intention)
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    api.set_intention.return_value = _intention_ack()
+
+    await start.on_intention_preset(_callback("intention:work"), state, api)
+
+    sent = api.set_intention.await_args.args[1]
+    assert sent.startswith("работа и дело")
+    assert await state.get_state() is None
+
+
+async def test_own_request_button_asks_to_type_it(state):
+    await state.set_state(GameStates.waiting_intention)
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    callback = _callback("intention:own")
+
+    await start.on_intention_preset(callback, state, api)
+
+    api.set_intention.assert_not_awaited()
+    assert _sent_text(callback.message) == texts.ASK_OWN_INTENTION
+    assert await state.get_state() == GameStates.waiting_intention.state
+
+
+async def test_stale_request_button_does_nothing(state):
+    await state.update_data(game_id=str(GAME_ID))  # request already set: not waiting for one
+    api = AsyncMock()
+
+    await start.on_intention_preset(_callback("intention:work"), state, api)
+
+    api.set_intention.assert_not_awaited()
+
+
+async def test_cell_offers_next_and_reactions(state):
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    api.roll.return_value = _roll()
+    callback = _callback()
+
+    await game.on_roll(callback, state, api)
+
+    markup = callback.message.answer.await_args.kwargs["reply_markup"]
+    assert [b.callback_data for row in markup.inline_keyboard for b in row] == [
+        "next", "react:yes", "react:no"
+    ]
+
+
+async def test_next_logs_the_skip_and_rolls_in_one_tap(state):
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    api.roll.return_value = _roll()
+
+    await game.on_next(_callback("next"), state, api)
+
+    api.skip.assert_awaited_once_with(str(GAME_ID))
+    api.roll.assert_awaited_once()
+
+
+async def test_reaction_is_sent_and_leaves_only_next(state):
+    await state.update_data(game_id=str(GAME_ID))
+    api = AsyncMock()
+    callback = _callback("react:yes")
+
+    await game.on_reaction(callback, state, api)
+
+    api.react.assert_awaited_once_with(str(GAME_ID), "yes")
+    markup = callback.message.edit_reply_markup.await_args.kwargs["reply_markup"]
+    assert [b.callback_data for row in markup.inline_keyboard for b in row] == ["next"]

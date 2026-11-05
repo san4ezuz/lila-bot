@@ -1,4 +1,5 @@
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -89,7 +90,7 @@ async def _begin_game(msg: Message, state: FSMContext, api: GameApiClient, teleg
 
     if result.status == "setup":
         await state.set_state(GameStates.waiting_intention)
-        await msg.answer(esc(result.guide_message))
+        await msg.answer(esc(result.guide_message), reply_markup=keyboards.intention_kb())
     else:
         await state.set_state(None)
         await msg.answer(esc(result.guide_message), reply_markup=keyboards.roll_kb())
@@ -108,22 +109,14 @@ async def on_start_game(callback: CallbackQuery, state: FSMContext, api: GameApi
     _busy_telegram_ids.add(telegram_id)
     track(api, telegram_id, "start_clicked")
     try:
-        # Ask once per user, right at the moment they actually mean to play, rather than on every
-        # /start — gender isn't needed until there's text to address them with.
-        try:
-            status = await api.get_user_status(telegram_id)
-        except ApiError:
-            status = None
-        if status is not None and status.gender is None:
-            track(api, telegram_id, "gender_asked")
-            await msg.answer(texts.ASK_GENDER_TEXT, reply_markup=keyboards.gender_kb())
-            return
-
+        # No gender question on the way in (docs/ROADMAP.md, этап 3): static texts are neutral
+        # and the guide reads the form of address from the player's own words.
         await _begin_game(msg, state, api, telegram_id)
     finally:
         _busy_telegram_ids.discard(telegram_id)
 
 
+# Old chats still have the gender buttons from before the question was dropped.
 @router.callback_query(F.data.startswith("set_gender:"))
 async def on_set_gender(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
     await callback.answer()
@@ -148,9 +141,15 @@ async def on_set_gender(callback: CallbackQuery, state: FSMContext, api: GameApi
 
 
 async def submit_intention(
-    message: Message, state: FSMContext, api: GameApiClient, game_id: str
+    message: Message,
+    state: FSMContext,
+    api: GameApiClient,
+    game_id: str,
+    intention: str | None = None,
 ) -> None:
-    intention = (message.text or "").strip()[: texts.MAX_PLAYER_MESSAGE_LENGTH]
+    """`intention` — a preset picked with a button; otherwise the request is `message.text`."""
+    if intention is None:
+        intention = (message.text or "").strip()[: texts.MAX_PLAYER_MESSAGE_LENGTH]
     if not intention:
         await message.answer(texts.ASK_INTENTION_AGAIN)
         return
@@ -168,6 +167,35 @@ async def submit_intention(
         return
     await state.set_state(None)
     await message.answer(esc(result.guide_message), reply_markup=keyboards.roll_kb())
+
+
+_PRESET_INTENTIONS = {key: text for key, _, text in texts.INTENTION_PRESETS}
+
+
+@router.callback_query(F.data.startswith("intention:"))
+async def on_intention_preset(callback: CallbackQuery, state: FSMContext, api: GameApiClient) -> None:
+    await callback.answer()
+    msg = callback_message(callback)
+    if msg is None:
+        return
+
+    key = (callback.data or "").split(":", 1)[1]
+    try:
+        game_id = await current_game_id(state, api, callback.from_user.id)
+    except ApiError:
+        await msg.answer(texts.GUIDE_THINKING_ERROR)
+        return
+    if game_id is None or await state.get_state() != GameStates.waiting_intention.state:
+        return  # a stale button: the request is already set, or there's no game
+
+    if key not in _PRESET_INTENTIONS:  # "Свой вариант"
+        await msg.answer(texts.ASK_OWN_INTENTION)
+        return
+    try:
+        await msg.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    await submit_intention(msg, state, api, game_id, intention=_PRESET_INTENTIONS[key])
 
 
 # Commands are excluded so /newgame and /grant, registered later, aren't swallowed as the request.

@@ -18,6 +18,13 @@ GUIDE_SYSTEM_PROMPT = """\
 Тон. Спокойный, тёплый, обращение на «ты». Без эзотерического пафоса и без канцелярита. \
 Никогда не используй фразы вроде «Вселенная посылает тебе» или другие эзотерические штампы.
 
+Род. Если в контексте не сказано, в каком роде обращаться, определи род по собственным словам \
+игрока («я устала» — женский, «я сам не знаю» — мужской) и молча используй его, не объявляя об \
+этом. Пока по словам игрока род не понятен, не угадывай и не пиши по умолчанию в мужском роде: \
+строй фразы так, чтобы род не был нужен. Вместо «ты попал сюда» — «фишка попала сюда», вместо \
+«ты дошёл» — «путь привёл тебя», вместо «когда будешь готов» — «когда захочешь», вместо «ты \
+сам» — «ты своими силами», вместо «ты выбрал» — «твой выбор». Окончания в скобках не пиши.
+
 Метод. На каждой клетке предлагай 1–2 грани трактовки вместо единственно верной, опираясь на \
 её тему и грани из предоставленных данных, но переформулируя их под конкретный запрос игрока и \
 его путь, а не пересказывая справочный текст дословно. Завершай одним конкретным рефлексивным \
@@ -45,7 +52,14 @@ def _gender_instruction(gender: str | None) -> str:
         return "Обращайся к игроку в мужском роде (он, пришёл, готов, вошёл)."
     if gender == "female":
         return "Обращайся к игроку в женском роде (она, пришла, готова, вошла)."
-    return ""
+    # Repeated in every call: the rule in the system prompt alone loses to the model's habit of
+    # defaulting to the masculine (scripts/eval_prompts.py).
+    return (
+        "Род игрока не указан. Если он ясен из слов самого игрока выше — молча используй его. "
+        "Если нет — не обращайся к игроку глаголами в прошедшем времени и краткими "
+        "прилагательными («ты написал», «ты заметил», «готов»): перестрой фразу — «ты пишешь», "
+        "«что ты замечаешь», «когда захочешь». Обращение остаётся на «ты», не переходи на «вы»."
+    )
 
 
 def build_interpret_cell_context(
@@ -63,6 +77,7 @@ def build_interpret_cell_context(
     skipped_cell_name: str | None = None,
     skipped_cell_theme: str | None = None,
     gender: str | None = None,
+    revisit: bool = False,
 ) -> str:
     lines = []
     if intention:
@@ -95,10 +110,23 @@ def build_interpret_cell_context(
             "клетки настиг игрока мгновенно, а не через проживание — не разбирай её подробно, "
             "основной фокус остаётся на текущей клетке."
         )
+    if revisit:
+        lines.append(
+            "Игрок уже стоял на этой клетке раньше в этой партии и вернулся сюда. Отметь "
+            "возвращение одной фразой и посмотри на клетку с другой стороны: не повторяй ту "
+            "трактовку, которую игрок уже слышал."
+        )
     lines.append("Грани трактовки клетки (используй как опору, не копируй дословно): " + " ".join(facets))
     lines.append("Возможные вопросы (переформулируй под игрока): " + " ".join(questions))
-    lines.append("Дай интерпретацию этой клетки для игрока и заверши одним рефлексивным вопросом.")
+    lines.append(
+        "Дай интерпретацию этой клетки для игрока и заверши одним рефлексивным вопросом. "
+        "Не больше 100 слов, два коротких абзаца."
+    )
     return "\n".join(lines)
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def build_not_entered_context(
@@ -122,16 +150,23 @@ def build_not_entered_context(
     lines.append(
         "Не констатируй правило сухо и не считай попытки вслух. Вместо этого в 1-2 фразах "
         "мягко предложи задержаться на этом моменте: то, что дверь пока не открывается, можно "
-        "связать с его собственным запросом — что мешает начать, чего он на самом деле ждёт, "
-        "готов ли он сейчас. Не дави, не читай нотации, не констатируй очевидное. Заверши "
-        "тёплым приглашением бросить кубик ещё раз."
+        "связать с собственным запросом игрока — что мешает начать, чего на самом деле "
+        "хочется дождаться, есть ли сейчас готовность. Не дави, не читай нотации, не "
+        "констатируй очевидное. Заверши тёплым приглашением бросить кубик ещё раз — он "
+        "бросается кнопкой под сообщением."
     )
     return "\n".join(lines)
 
 
 def build_deepen_context(
-    intention: str | None, cell_name: str, player_text: str, gender: str | None = None
+    intention: str | None,
+    cell_name: str,
+    player_text: str,
+    gender: str | None = None,
+    dialogue: list[tuple[str, str]] | None = None,
 ) -> str:
+    """`dialogue` — the conversation on this cell before `player_text`, oldest first, as
+    (role, text) with role 'guide' or 'player'; it starts with the cell reading itself."""
     lines = []
     if intention:
         lines.append(f"Запрос игрока на партию: «{intention}».")
@@ -139,15 +174,29 @@ def build_deepen_context(
     if gender_line:
         lines.append(gender_line)
     lines.append(f"Текущая клетка: «{cell_name}».")
-    lines.append(f"Ответ игрока на предыдущий вопрос: «{player_text}»")
+    if dialogue:
+        speakers = {"guide": "Ты", "player": "Игрок"}
+        lines.append("Разговор на этой клетке до сих пор:")
+        lines.extend(f"{speakers.get(role, role)}: «{_clip(text, 700)}»" for role, text in dialogue)
+    lines.append(f"Ответ игрока на твоё последнее сообщение: «{player_text}»")
     lines.append(
         "Углуби диалог по этому ответу: не морализируй, не пересказывай сказанное игроком, "
-        "заверши либо одним новым вопросом, либо мягким переходом к следующему броску."
+        "заверши либо одним новым вопросом, либо мягким переходом к следующему броску. "
+        "Не больше 90 слов."
     )
     return "\n".join(lines)
 
 
-def build_summary_context(intention: str | None, visited: list[str], gender: str | None = None) -> str:
+def build_summary_context(
+    intention: str | None,
+    visited: list[str],
+    gender: str | None = None,
+    player_answers: list[str] | None = None,
+    resonated: list[str] | None = None,
+    not_resonated: list[str] | None = None,
+) -> str:
+    """`visited` entries already carry snakes and arrows («17 Зависть —змея→ 4 Жадность»);
+    `player_answers` — what the player wrote during the game, oldest first."""
     lines = []
     if intention:
         lines.append(f"Запрос игрока на партию: «{intention}».")
@@ -155,9 +204,18 @@ def build_summary_context(intention: str | None, visited: list[str], gender: str
     if gender_line:
         lines.append(gender_line)
     lines.append("Пройденный путь по клеткам от начала до конца: " + " → ".join(visited) + ".")
+    if player_answers:
+        lines.append("Что игрок писал по ходу партии:")
+        lines.extend(f"— «{_clip(answer, 300)}»" for answer in player_answers)
+    if resonated:
+        lines.append("Клетки, которые игрок отметил как откликнувшиеся: " + ", ".join(resonated) + ".")
+    if not_resonated:
+        lines.append("Клетки, которые игроку не откликнулись: " + ", ".join(not_resonated) + ".")
     lines.append(
         "Дай связное резюме всей партии: не перечисляй клетки построчно, а собери из пути "
-        "цельную историю в контексте запроса игрока. Заверши одним вопросом, приглашающим "
-        "взять что-то из этой партии в обычную жизнь."
+        "цельную историю в контексте запроса игрока. Опирайся на его собственные слова и на "
+        "повороты пути — змеи и стрелы, — но не цитируй ответы дословно и не пересказывай их "
+        "подряд. Заверши одним вопросом, приглашающим взять что-то из этой партии в обычную "
+        "жизнь. Не больше 250 слов."
     )
     return "\n".join(lines)

@@ -23,6 +23,7 @@ pytest -q                        # тесты используют отдель�
 ruff check src && mypy src
 alembic upgrade head && alembic check
 python scripts/play_cli.py 1000  # симуляция баланса партий
+python scripts/eval_prompts.py out.md  # эталонный прогон промпта на живой модели (центы)
 ```
 
 Lock-файл после правки зависимостей в `pyproject.toml`:
@@ -47,7 +48,10 @@ Lock-файл после правки зависимостей в `pyproject.tom
 - Safety: словарь `src/llm/safety.py` и классификатор там же. Новая фраза → кейс в
   `tests/test_safety.py`, и бытовая фраза-антипример, если шаблон рискует её поймать.
 - Локальный `.env` может указывать другую модель, чем прод (`LLM_MODEL`) — живые проверки
-  промптов делать на прод-модели.
+  промптов делать на прод-модели: `LLM_MODEL=claude-haiku-5-5 python scripts/eval_prompts.py`.
+- Правка промпта или контекста → прогон `scripts/eval_prompts.py` и запись в `docs/PROMPTS.md`.
+  Не вставлять в промпт примеры запрещённых форм («готов(а)»): модель их воспроизводит.
+- Статичные тексты для игрока — без рода (тест `test_static_texts_need_no_gender`).
 - На этой машине Windows и TLS-перехват: внутри Docker pip не достаёт PyPI, это не ошибка проекта.
 
 ## Прод

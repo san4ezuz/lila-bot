@@ -209,3 +209,11 @@ class StatsResponse(BaseModel):
     tokens_in: int
     tokens_out: int
     tokens_cache_read: int
+
+
+class ReactionRequest(BaseModel):
+    reaction: Literal["yes", "no"]
+
+
+class ReactionAck(BaseModel):
+    ok: bool = True

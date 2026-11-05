@@ -11,7 +11,11 @@ see src/bot/utils.py — or a stray '<'/'&' in a Claude response breaks message 
 BTN_START_GAME = "🎲 Начать партию"
 BTN_ABOUT = "ℹ️ Что это за игра?"
 BTN_ROLL = "🎲 Бросить кубик"
-BTN_SKIP = "Пропустить"
+BTN_NEXT = "🎲 Дальше"
+BTN_SKIP = "Пропустить"  # old cell messages still carry it
+BTN_REACT_YES = "✨ Откликается"
+BTN_REACT_NO = "Не про меня"
+BTN_INTENTION_OWN = "✍️ Свой вариант"
 BTN_RETRY_SUMMARY = "Получить итог партии"
 BTN_PAY = "Оплатить"
 BTN_NEW_GAME = "🆕 Новая игра"
@@ -68,15 +72,30 @@ def about_game_text(price: int) -> str:
     )
 
 
+# Request presets: (callback key, button, the request text saved for the game). The text is what
+# the guide sees, so it is phrased as a request, not as a button label.
+INTENTION_PRESETS = (
+    ("relations", "💞 Отношения", "отношения — с близкими, с партнёром, с собой"),
+    ("work", "💼 Работа и дело", "работа и дело — куда двигаться и что выбрать"),
+    ("stuck", "🌀 Застой", "застой — хочется сдвинуться с места"),
+)
+
+ASK_OWN_INTENTION = "Напиши свой запрос в паре слов или одной фразой — с чем ты приходишь к игре?"
+
+# Kept for players who still have the old gender buttons in their chat history.
 ASK_GENDER_TEXT = "Чтобы обращаться к тебе правильно — как к тебе лучше обращаться?"
 
 WELCOME_BACK = "С возвращением! Продолжим партию?"
 
-ASK_FOR_TEXT_RESPONSE = "Можешь ответить текстом — или нажми «Пропустить»."
+ASK_FOR_TEXT_RESPONSE = "Можешь ответить текстом — или нажми «Дальше»."
+REACTION_ACK = "Отметил. Можно ответить текстом или идти дальше."
 
 SKIPPED_RESPONSE_ACK = "Хорошо, идём дальше."
 
-FINISHED_SUFFIX = "\n\nПартия завершена. Спасибо, что прошёл этот путь. Как тебе игра — что бы ты сказал одним словом?"
+FINISHED_SUFFIX = (
+    "\n\nПартия завершена. Спасибо за этот путь. Как тебе игра — какое слово первым приходит "
+    "в голову?"
+)
 FEEDBACK_THANKS = "Спасибо! Если захочешь пройти путь ещё раз — я здесь."
 
 # {cell_id} and {cell_name} must already be HTML-escaped by the caller before formatting in.
@@ -113,11 +132,11 @@ def move_header(
 
 PAYWALL_MESSAGE = (
     "Первая партия уже сыграна. Следующая — платная: {price} ₽.\n"
-    "Если готов продолжить путь, оплати по ссылке ниже."
+    "Чтобы продолжить путь, оплати по ссылке ниже."
 )
 
 GUIDE_THINKING_ERROR = "Проводник задумался. Попробуй ещё раз через момент."
-ASK_INTENTION_AGAIN = "Сначала напиши свой запрос на партию — с чем ты приходишь к игре?"
+ASK_INTENTION_AGAIN = "Сначала выбери запрос на партию или напиши свой — с чем ты приходишь к игре?"
 TEXT_ONLY_MESSAGE = "Пока я понимаю только текст — напиши, пожалуйста, словами."
 
 # Help contacts. Numbers must be re-checked by hand before every release (docs/ROADMAP.md, этап 1):

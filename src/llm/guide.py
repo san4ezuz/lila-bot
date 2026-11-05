@@ -67,19 +67,17 @@ async def _call(
 
 
 def intro_message() -> str:
+    """Shown with the request buttons (src/bot/keyboards.py::intention_kb)."""
     return (
-        "Здравствуй. Я буду твоим проводником в игре Лила — путешествии от клетки к клетке, "
-        "где выпавшее число и твои собственные ответы складываются в историю. Прежде чем "
-        "бросить кубик в первый раз, расскажи коротко: с каким вопросом или запросом ты сейчас "
-        "приходишь к этой игре?"
+        "С чем ты приходишь к игре? Выбери тему или напиши свой запрос — "
+        "по нему я буду читать каждую клетку."
     )
 
 
 def intention_ack_message(intention: str, gender: str | None = None) -> str:
-    came = _gendered("пришёл", "пришла", "пришёл(-а)", gender)
     return (
-        f"Понимаю. Ты {came} с этим: «{intention}». Буду держать это в уме на протяжении всего "
-        "пути. Чтобы войти в игру, по правилам «Лилы» нужно выбросить шестёрку — бросай кубик."
+        f"Принято: «{intention}». Буду держать это в уме весь путь. Чтобы войти в игру, по "
+        "правилам «Лилы» нужно выбросить шестёрку — бросай кубик."
     )
 
 
@@ -89,11 +87,14 @@ def first_try_entry_message(intention: str | None, gender: str | None = None) ->
     say the same thing to every player on turn one. Celebrate the roll and the request instead
     (per product feedback: "поздравить и сказать что запрос реально важен, особо не
     анализировать")."""
-    entered = _gendered("вошёл", "вошла", "вошёл(-а)", gender)
+    entered = _gendered("вошёл в игру", "вошла в игру", "в игре", gender)
     if intention:
-        request_line = f" Ты сразу {entered} с запросом «{intention}» — и это само по себе важно: он поведёт тебя дальше."
+        request_line = (
+            f" Ты сразу {entered} с запросом «{intention}» — и это само по себе важно: "
+            "он поведёт тебя дальше."
+        )
     else:
-        request_line = f" Ты сразу {entered} в игру."
+        request_line = f" Ты сразу {entered}."
     return (
         "Шестёрка с первого броска — редкая удача, поздравляю!" + request_line + " Клетку "
         "«Заблуждение» разбирать подробно не будем — с неё начинают все, настоящий путь впереди."
@@ -122,7 +123,7 @@ def blocked_overshoot_message(cell: Cell) -> str:
 
 def turn_limit_message() -> str:
     return (
-        "Партия подошла к своему пределу ходов, хотя ты не успел дойти до финальной клетки — "
+        "Партия подошла к своему пределу ходов, хотя до финальной клетки путь ещё не дошёл — "
         "и в этом тоже есть смысл. Сейчас соберём то, что удалось пройти, в единую картину."
     )
 
@@ -131,7 +132,7 @@ def cell_reply_limit_message() -> str:
     """The per-cell reply limit is hit (src/services/llm_limits.py) — a nudge onward instead of
     another model reply on the same cell."""
     return (
-        "Ты уже много сказал(а) об этой клетке — пусть это побудет с тобой. "
+        "Об этой клетке сказано уже немало — пусть это побудет с тобой. "
         "Бросай кубик, путь продолжается."
     )
 
@@ -143,7 +144,7 @@ def safety_referral_message(asks_intention: bool = False) -> str:
     Help contacts are appended by the bot (texts.SAFETY_HELP_LINE). `asks_intention` — the text
     was the game request, which isn't saved, so the player is asked for another one."""
     message = (
-        "Спасибо, что поделился(-ась) этим. То, о чём ты пишешь, звучит серьёзно, и с этим "
+        "Спасибо, что рассказываешь мне об этом. То, о чём ты пишешь, звучит серьёзно, и с этим "
         "стоит поговорить с живым человеком, а не только с игрой. Если тебе тяжело прямо "
         "сейчас, пожалуйста, позвони по одному из номеров ниже — там выслушают."
     )
@@ -192,6 +193,7 @@ async def interpret_cell(
     skipped_cell: Cell | None = None,
     gender: str | None = None,
     use_llm: bool = True,
+    revisit: bool = False,
 ) -> LlmResult:
     context = build_interpret_cell_context(
         intention=intention,
@@ -208,6 +210,7 @@ async def interpret_cell(
         skipped_cell_name=skipped_cell.name if skipped_cell else None,
         skipped_cell_theme=skipped_cell.theme if skipped_cell else None,
         gender=gender,
+        revisit=revisit,
     )
     fallback = (
         f"Фишка на клетке {cell.id}, «{cell.name}». {cell.theme} {cell.questions[0]}"
@@ -223,9 +226,12 @@ async def deepen(
     player_text: str,
     gender: str | None = None,
     use_llm: bool = True,
+    dialogue: list[tuple[str, str]] | None = None,
 ) -> LlmResult:
-    context = build_deepen_context(intention, cell.name, player_text, gender=gender)
-    fallback = "Слышу тебя. Идём дальше — бросай кубик, когда будешь готов."
+    context = build_deepen_context(
+        intention, cell.name, player_text, gender=gender, dialogue=dialogue
+    )
+    fallback = "Слышу тебя. Идём дальше — бросай кубик, когда захочешь."
     return await _call(context, _MAX_TOKENS_REPLY, "low", fallback, kind="deepen", use_llm=use_llm)
 
 
@@ -234,11 +240,21 @@ async def summarize_game(
     visited: list[str],
     gender: str | None = None,
     use_llm: bool = True,
+    player_answers: list[str] | None = None,
+    resonated: list[str] | None = None,
+    not_resonated: list[str] | None = None,
 ) -> LlmResult:
-    context = build_summary_context(intention, visited, gender=gender)
+    context = build_summary_context(
+        intention,
+        visited,
+        gender=gender,
+        player_answers=player_answers,
+        resonated=resonated,
+        not_resonated=not_resonated,
+    )
     path = " → ".join(visited) if visited else "путь ещё не начался"
     fallback = (
-        f"Вот путь, который ты прошёл за эту партию: {path}. "
+        f"Вот путь этой партии: {path}. "
         "Что из пройденного отзывается в тебе сильнее всего прямо сейчас?"
     )
     return await _call(
